@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Azure Multiplayer Pong</title>
+    <link rel="stylesheet" href="../public/style.css">
+</head>
+<body>
+    <div id="app">
+        <h1>Azure Multiplayer Pong</h1>
+        <canvas id="pong-canvas" width="800" height="600"></canvas>
+        <div id="ui">
+            <button id="play-vs-ai">Play vs AI</button>
+            <button id="play-vs-player">Play Online</button>
+            <button id="leaderboard">Leaderboard</button>
+            <button id="login">Login</button>
+            <button id="logout" style="display:none;">Logout</button>
+        </div>
+        <div id="chat" style="display:none;"></div>
+    </div>
+    <script type="module" src="main.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@microsoft/signalr@7.0.12/dist/browser/signalr.min.js"></script>
+</body>
+</html>
