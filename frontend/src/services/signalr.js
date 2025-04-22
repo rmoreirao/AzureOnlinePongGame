@@ -1,13 +1,15 @@
 // Multiplayer SignalR connection logic
-import * as signalR from "@microsoft/signalr";
+// Uses global signalR object from CDN
 
 let connection = null;
 
 export async function connectSignalR(onGameUpdate, onMatchFound) {
-    // TODO: Replace with your Azure SignalR endpoint
-    const SIGNALR_URL = "<YOUR_AZURE_SIGNALR_FUNCTION_ENDPOINT>";
+    // Call your negotiate endpoint (local Azure Functions)
+    const res = await fetch('http://localhost:7071/api/negotiate', { method: 'POST' });
+    const info = await res.json();
+
     connection = new signalR.HubConnectionBuilder()
-        .withUrl(SIGNALR_URL)
+        .withUrl(info.url, { accessTokenFactory: () => info.accessToken })
         .withAutomaticReconnect()
         .build();
 

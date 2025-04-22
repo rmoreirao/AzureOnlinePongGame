@@ -1,0 +1,13 @@
+# Ignore local Azure Functions settings
+api/local.settings.json
+# Node modules and build output
+node_modules/
+dist/
+build/
+# OS generated files
+.DS_Store
+Thumbs.db
+# Logs
+*.log
+# VS Code settings
+.vscode/

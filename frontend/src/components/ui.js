@@ -1,4 +1,5 @@
-import { connectSignalR, joinMultiplayer } from '../services/signalr.js';
+import { enableMultiplayer, renderMultiplayerState } from '../game/game.js';
+import { connectSignalR, joinMultiplayer, sendPaddleUpdate } from '../services/signalr.js';
 
 let multiplayerActive = false;
 
@@ -20,12 +21,12 @@ export function setupUI() {
 }
 
 function onGameUpdate(gameState) {
-    // TODO: Update game rendering with new state from server
-    console.log('GameUpdate', gameState);
+    renderMultiplayerState(gameState);
 }
 
 function onMatchFound(matchInfo) {
-    // TODO: Notify user and start the multiplayer game
+    // Enable multiplayer mode in game logic
+    enableMultiplayer(matchInfo.side, sendPaddleUpdate);
     alert('Match found! Starting game...');
     document.getElementById('play-vs-player').innerText = 'Play Online';
     document.getElementById('play-vs-player').disabled = false;
