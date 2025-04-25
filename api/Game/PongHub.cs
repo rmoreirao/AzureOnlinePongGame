@@ -8,6 +8,7 @@ using Microsoft.Azure.WebJobs.Extensions.SignalRService;
 using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using StackExchange.Redis;
 
 namespace AzureOnlinePongGame.Game
 {
@@ -15,7 +16,6 @@ namespace AzureOnlinePongGame.Game
     {
         // In-memory matchmaking and game state (replace with Redis for production)
         private static ConcurrentQueue<string> waitingPlayers = new ConcurrentQueue<string>();
-        private static ConcurrentDictionary<string, GameSession> activeGames = new ConcurrentDictionary<string, GameSession>();
         private static ConcurrentDictionary<string, Timer> gameTimers = new ConcurrentDictionary<string, Timer>();
         private const int GAME_LOOP_INTERVAL_MS = 33; // ~30 FPS
         private const float PADDLE_HEIGHT = 100;
@@ -26,6 +26,34 @@ namespace AzureOnlinePongGame.Game
         private const float PADDLE_SPEED = 6;
         private const float BALL_SPEED = 6;
         private const int WIN_SCORE = 5;
+
+        // Redis connection
+        private static readonly Lazy<ConnectionMultiplexer> redisConnection = new Lazy<ConnectionMultiplexer>(() =>
+            ConnectionMultiplexer.Connect(Environment.GetEnvironmentVariable("RedisConnectionString") ?? "localhost")
+        );
+        private static IDatabase RedisDb => redisConnection.Value.GetDatabase();
+
+        private static string GetSessionKey(string playerId) => $"pong:session:{playerId}";
+        private static string GetSessionKeyBySessionId(string sessionId) => $"pong:sessionid:{sessionId}";
+
+        private static async Task StoreSessionAsync(string playerId, GameSession session)
+        {
+            var json = JsonConvert.SerializeObject(session);
+            await RedisDb.StringSetAsync(GetSessionKey(playerId), json);
+            // Also store by sessionId if you want to support multi-player lookup
+            await RedisDb.StringSetAsync(GetSessionKeyBySessionId(session.Player1Id + ":" + session.Player2Id), json);
+        }
+        private static async Task<GameSession?> GetSessionAsync(string playerId)
+        {
+            var json = await RedisDb.StringGetAsync(GetSessionKey(playerId));
+            if (json.IsNullOrEmpty) return null;
+            return JsonConvert.DeserializeObject<GameSession>(json!);
+        }
+        private static async Task UpdateSessionForBothPlayersAsync(GameSession session)
+        {
+            await StoreSessionAsync(session.Player1Id, session);
+            await StoreSessionAsync(session.Player2Id, session);
+        }
 
         private class GameSession
         {
@@ -84,14 +112,12 @@ namespace AzureOnlinePongGame.Game
             waitingPlayers.Enqueue(playerId);
             if (waitingPlayers.Count >= 2)
             {
-                // Pair two players
                 if (waitingPlayers.TryDequeue(out var p1) && waitingPlayers.TryDequeue(out var p2))
                 {
                     var session = new GameSession { Player1Id = p1, Player2Id = p2 };
-                    activeGames[p1] = session;
-                    activeGames[p2] = session;
+                    await UpdateSessionForBothPlayersAsync(session);
                     // Start server-side game loop
-                    var timer = new Timer(async _ => await GameLoop(session, signalRMessages), null, 0, GAME_LOOP_INTERVAL_MS);
+                    var timer = new Timer(async _ => await GameLoopRedis(session, signalRMessages), null, 0, GAME_LOOP_INTERVAL_MS);
                     gameTimers[p1] = timer;
                     gameTimers[p2] = timer;
                     // Notify both players
@@ -111,9 +137,81 @@ namespace AzureOnlinePongGame.Game
             }
         }
 
-        private static async Task GameLoop(GameSession session, IAsyncCollector<SignalRMessage> signalRMessages)
+        [FunctionName("StartBotMatch")]
+        public static async Task StartBotMatch(
+            [SignalRTrigger("pong", "messages", "StartBotMatch")] InvocationContext invocationContext,
+            [SignalR(HubName = "pong")] IAsyncCollector<SignalRMessage> signalRMessages,
+            ILogger log)
         {
-            var state = session.State;
+            string playerId = invocationContext.ConnectionId;
+            string botId = $"bot_{Guid.NewGuid()}";
+            var session = new GameSession { Player1Id = playerId, Player2Id = botId };
+            await UpdateSessionForBothPlayersAsync(session);
+            // Start server-side game loop with bot
+            var timer = new Timer(async _ => await GameLoopWithBot(session, signalRMessages), null, 0, GAME_LOOP_INTERVAL_MS);
+            gameTimers[playerId] = timer;
+            gameTimers[botId] = timer;
+            // Notify player
+            await signalRMessages.AddAsync(new SignalRMessage
+            {
+                Target = "MatchFound",
+                Arguments = new object[] { new { opponent = "Bot", side = 1, isBot = true } },
+                ConnectionId = playerId
+            });
+        }
+
+        private static async Task GameLoopWithBot(GameSession session, IAsyncCollector<SignalRMessage> signalRMessages)
+        {
+            var session1 = await GetSessionAsync(session.Player1Id);
+            if (session1 == null) return;
+            var state = session1.State;
+            if (state.GameOver) return;
+            // Bot AI: simple follow the ball
+            state.Player2PaddleY += Math.Sign(state.BallY + BALL_SIZE / 2 - (state.Player2PaddleY + PADDLE_HEIGHT / 2)) * PADDLE_SPEED * 0.85f;
+            state.Player2PaddleY = Math.Max(0, Math.Min(CANVAS_HEIGHT - PADDLE_HEIGHT, state.Player2PaddleY));
+            // Ball movement and collisions (same as normal loop)
+            state.BallX += state.BallVX;
+            state.BallY += state.BallVY;
+            if (state.BallY <= 0 || state.BallY + BALL_SIZE >= CANVAS_HEIGHT)
+                state.BallVY *= -1;
+            if (state.BallX <= 32 && state.BallY + BALL_SIZE > state.Player1PaddleY && state.BallY < state.Player1PaddleY + PADDLE_HEIGHT)
+            {
+                state.BallVX *= -1;
+                state.BallX = 32;
+            }
+            if (state.BallX + BALL_SIZE >= CANVAS_WIDTH - 32 && state.BallY + BALL_SIZE > state.Player2PaddleY && state.BallY < state.Player2PaddleY + PADDLE_HEIGHT)
+            {
+                state.BallVX *= -1;
+                state.BallX = CANVAS_WIDTH - 32 - BALL_SIZE;
+            }
+            if (state.BallX < 0)
+            {
+                state.Player2Score++;
+                if (state.Player2Score >= WIN_SCORE) state.GameOver = true;
+                ResetBall(state, -1);
+            }
+            if (state.BallX > CANVAS_WIDTH)
+            {
+                state.Player1Score++;
+                if (state.Player1Score >= WIN_SCORE) state.GameOver = true;
+                ResetBall(state, 1);
+            }
+            session1.State = state;
+            await UpdateSessionForBothPlayersAsync(session1);
+            await signalRMessages.AddAsync(new SignalRMessage
+            {
+                Target = "GameUpdate",
+                Arguments = new object[] { state },
+                ConnectionId = session1.Player1Id
+            });
+        }
+
+        private static async Task GameLoopRedis(GameSession session, IAsyncCollector<SignalRMessage> signalRMessages)
+        {
+            // Always get the latest session from Redis
+            var session1 = await GetSessionAsync(session.Player1Id);
+            if (session1 == null) return;
+            var state = session1.State;
             if (state.GameOver) return;
             // Ball movement
             state.BallX += state.BallVX;
@@ -122,13 +220,11 @@ namespace AzureOnlinePongGame.Game
             if (state.BallY <= 0 || state.BallY + BALL_SIZE >= CANVAS_HEIGHT)
                 state.BallVY *= -1;
             // Collisions with paddles
-            // Player 1 (left)
             if (state.BallX <= 32 && state.BallY + BALL_SIZE > state.Player1PaddleY && state.BallY < state.Player1PaddleY + PADDLE_HEIGHT)
             {
                 state.BallVX *= -1;
                 state.BallX = 32;
             }
-            // Player 2 (right)
             if (state.BallX + BALL_SIZE >= CANVAS_WIDTH - 32 && state.BallY + BALL_SIZE > state.Player2PaddleY && state.BallY < state.Player2PaddleY + PADDLE_HEIGHT)
             {
                 state.BallVX *= -1;
@@ -147,18 +243,21 @@ namespace AzureOnlinePongGame.Game
                 if (state.Player1Score >= WIN_SCORE) state.GameOver = true;
                 ResetBall(state, 1);
             }
+            // Save updated state to Redis
+            session1.State = state;
+            await UpdateSessionForBothPlayersAsync(session1);
             // Broadcast state
             await signalRMessages.AddAsync(new SignalRMessage
             {
                 Target = "GameUpdate",
                 Arguments = new object[] { state },
-                ConnectionId = session.Player1Id
+                ConnectionId = session1.Player1Id
             });
             await signalRMessages.AddAsync(new SignalRMessage
             {
                 Target = "GameUpdate",
                 Arguments = new object[] { state },
-                ConnectionId = session.Player2Id
+                ConnectionId = session1.Player2Id
             });
         }
 
@@ -177,10 +276,9 @@ namespace AzureOnlinePongGame.Game
             ILogger log)
         {
             string playerId = invocationContext.ConnectionId;
-            if (!activeGames.TryGetValue(playerId, out var session))
-                return;
+            var session = await GetSessionAsync(playerId);
+            if (session == null) return;
             int side = session.Player1Id == playerId ? 1 : 2;
-            // Get paddle Y from arguments robustly
             if (invocationContext.Arguments.Length > 0 && invocationContext.Arguments[0] != null)
             {
                 var arg = invocationContext.Arguments[0];
@@ -210,25 +308,24 @@ namespace AzureOnlinePongGame.Game
                 {
                     try
                     {
-                        // Attempt conversion, catching potential exceptions
                         y = Convert.ToSingle(arg);
                         valid = true;
                     }
-                    catch (Exception ex) // Catch any other unexpected exceptions
+                    catch (Exception ex)
                     {
                         log.LogError(ex, $"Unexpected error converting paddle position from player {playerId}. Argument type: {arg.GetType().FullName}, Value: {arg}");
                         valid = false;
                     }
                 }
-                // Debug log for paddle update value
                 log.LogInformation($"Received paddle update from {playerId}: {y} (valid: {valid})");
                 if (valid)
                 {
                     if (side == 1) session.State.Player1PaddleY = y;
                     else session.State.Player2PaddleY = y;
+                    log.LogInformation($"Updated game state: player1PaddleY={session.State.Player1PaddleY}, player2PaddleY={session.State.Player2PaddleY}");
+                    await UpdateSessionForBothPlayersAsync(session);
                 }
             }
-            // No need to broadcast here; game loop will broadcast authoritative state
         }
     }
 }

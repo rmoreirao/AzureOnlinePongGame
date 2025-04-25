@@ -13,6 +13,9 @@ Azure-hosted multiplayer Pong game
 - Play against:
   - A computer (simple AI paddle logic)
   - Another real player online (real-time)
+  - **A backend Bot in Multiplayer mode (Multiplayer Bot):**
+    - User is paired with a server-side Bot that simulates paddle movement and participates in the real-time game loop.
+
 
 ### Multiplayer Features
 - Real-time paddle and ball movement updates

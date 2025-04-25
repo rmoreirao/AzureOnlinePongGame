@@ -15,6 +15,15 @@ export function setupUI() {
             joinMultiplayer();
         }
     };
+    document.getElementById('play-vs-bot').onclick = async () => {
+        if (!multiplayerActive) {
+            multiplayerActive = true;
+            document.getElementById('play-vs-bot').disabled = true;
+            document.getElementById('play-vs-bot').innerText = 'Searching...';
+            await connectSignalR(onGameUpdate, onMatchFound);
+            startBotMatch();
+        }
+    };
     document.getElementById('leaderboard').onclick = () => alert('Leaderboard not implemented');
     document.getElementById('login').onclick = () => alert('Login not implemented');
     document.getElementById('logout').onclick = () => alert('Logout not implemented');
@@ -30,5 +39,20 @@ function onMatchFound(matchInfo) {
     alert('Match found! Starting game...');
     document.getElementById('play-vs-player').innerText = 'Play Online';
     document.getElementById('play-vs-player').disabled = false;
+    document.getElementById('play-vs-bot').innerText = 'Play vs Bot';
+    document.getElementById('play-vs-bot').disabled = false;
     multiplayerActive = false;
+}
+
+function startBotMatch() {
+    if (window.signalRConnection && window.signalRConnection.invoke) {
+        window.signalRConnection.invoke("StartBotMatch");
+    } else if (typeof sendStartBotMatch === 'function') {
+        sendStartBotMatch();
+    } else if (typeof window.connection !== 'undefined' && window.connection.invoke) {
+        window.connection.invoke("StartBotMatch");
+    } else {
+        // fallback: use the exported function from signalr.js
+        if (typeof window.startBotMatch === 'function') window.startBotMatch();
+    }
 }

@@ -11,6 +11,7 @@ const PADDLE_SPEED = 6;
 const BALL_SPEED = 6;
 
 let playerY = (CANVAS_HEIGHT - PADDLE_HEIGHT) / 2;
+let localPlayerY = (CANVAS_HEIGHT - PADDLE_HEIGHT) / 2;
 let aiY = (CANVAS_HEIGHT - PADDLE_HEIGHT) / 2;
 let ballX = (CANVAS_WIDTH - BALL_SIZE) / 2;
 let ballY = (CANVAS_HEIGHT - BALL_SIZE) / 2;
@@ -55,9 +56,20 @@ function draw(ctx) {
 function update() {
     if (gameOver) return;
     // Player paddle movement
-    if (upPressed) playerY -= PADDLE_SPEED;
-    if (downPressed) playerY += PADDLE_SPEED;
-    playerY = Math.max(0, Math.min(CANVAS_HEIGHT - PADDLE_HEIGHT, playerY));
+    if (isMultiplayer) {
+        if (upPressed) localPlayerY -= PADDLE_SPEED;
+        if (downPressed) localPlayerY += PADDLE_SPEED;
+        localPlayerY = Math.max(0, Math.min(CANVAS_HEIGHT - PADDLE_HEIGHT, localPlayerY));
+        playerY = localPlayerY;
+        if (sendPaddleUpdate) {
+            console.log("Sending paddle update:", localPlayerY);
+            sendPaddleUpdate(localPlayerY);
+        }
+    } else {
+        if (upPressed) playerY -= PADDLE_SPEED;
+        if (downPressed) playerY += PADDLE_SPEED;
+        playerY = Math.max(0, Math.min(CANVAS_HEIGHT - PADDLE_HEIGHT, playerY));
+    }
     // AI paddle movement (simple follow)
     if (!isMultiplayer) {
         if (aiY + PADDLE_HEIGHT / 2 < ballY) aiY += PADDLE_SPEED * 0.85;
@@ -95,11 +107,6 @@ function update() {
             resetBall();
         }
     }
-    // Multiplayer: send paddle updates
-    if (isMultiplayer && sendPaddleUpdate) {
-        console.log("Sending paddle update:", playerY);
-        sendPaddleUpdate(playerY);
-    }
 }
 
 function gameLoop(ctx) {
@@ -129,17 +136,24 @@ export function enableMultiplayer(side, sendUpdateFn) {
     multiplayerSide = side;
     sendPaddleUpdate = sendUpdateFn;
     // Reset state for multiplayer
-    playerY = (CANVAS_HEIGHT - PADDLE_HEIGHT) / 2;
+    localPlayerY = (CANVAS_HEIGHT - PADDLE_HEIGHT) / 2;
     aiY = (CANVAS_HEIGHT - PADDLE_HEIGHT) / 2;
     ballX = (CANVAS_WIDTH - BALL_SIZE) / 2;
     ballY = (CANVAS_HEIGHT - BALL_SIZE) / 2;
     playerScore = 0;
     aiScore = 0;
     gameOver = false;
+
+    if (isMultiplayer) {
+        if (window.multiplayerInterval) clearInterval(window.multiplayerInterval);
+        window.multiplayerInterval = setInterval(() => {
+            update();
+        }, 1000 / 60); // 60 FPS
+    }
 }
 
 export function renderMultiplayerState(state) {
-    console.log("Received game state from server:", state);
+    console.log("Received game state from server:", JSON.stringify(state));
 
     // Defensive: check for required properties
     if (!state || typeof state !== 'object') {
@@ -158,11 +172,10 @@ export function renderMultiplayerState(state) {
         return;
     }
 
+    // Only update opponent paddle and ball from server
     if (multiplayerSide === 1) {
-        playerY = state.player1PaddleY;
         aiY = state.player2PaddleY;
     } else {
-        playerY = state.player2PaddleY;
         aiY = state.player1PaddleY;
     }
     ballX = state.ballX;

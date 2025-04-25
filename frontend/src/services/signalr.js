@@ -13,6 +13,9 @@ export async function connectSignalR(onGameUpdate, onMatchFound) {
         .withAutomaticReconnect()
         .build();
 
+    // Expose connection globally for bot mode
+    window.signalRConnection = connection;
+
     connection.on("GameUpdate", onGameUpdate);
     connection.on("MatchFound", onMatchFound);
 
@@ -33,5 +36,11 @@ export function sendPaddleUpdate(paddleY) {
 export function joinMultiplayer() {
     if (connection) {
         connection.invoke("JoinMatchmaking");
+    }
+}
+
+export function startBotMatch() {
+    if (connection) {
+        connection.invoke("StartBotMatch");
     }
 }
