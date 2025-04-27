@@ -83,13 +83,18 @@ function update() {
         }
         return;
     }
+    
     // Player paddle movement
     if (isMultiplayer) {
+        let oldPlayerY = localPlayerY;
+        
         if (upPressed) localPlayerY -= PADDLE_SPEED;
         if (downPressed) localPlayerY += PADDLE_SPEED;
         localPlayerY = Math.max(0, Math.min(CANVAS_HEIGHT - PADDLE_HEIGHT, localPlayerY));
         playerY = localPlayerY;
-        if (!gameOver && sendPaddleUpdate) {
+        
+        // Only send paddle updates if the position actually changed
+        if (!gameOver && sendPaddleUpdate && Math.abs(oldPlayerY - localPlayerY) > 0) {
             sendPaddleUpdate(localPlayerY);
         }
     } else {
@@ -97,6 +102,7 @@ function update() {
         if (downPressed) playerY += PADDLE_SPEED;
         playerY = Math.max(0, Math.min(CANVAS_HEIGHT - PADDLE_HEIGHT, playerY));
     }
+    
     // AI paddle movement (simple follow)
     if (!isMultiplayer) {
         if (aiY + PADDLE_HEIGHT / 2 < ballY) aiY += PADDLE_SPEED * 0.85;

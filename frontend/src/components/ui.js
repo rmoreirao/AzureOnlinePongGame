@@ -104,8 +104,8 @@ export function setupUI() {
         if (!multiplayerActive) {
             multiplayerActive = true;
             document.getElementById('play-vs-player').disabled = true;
-            document.getElementById('play-vs-player').innerText = 'Searching...';
-            await connectSignalR(onGameUpdate, onMatchFound, onConnectionStateChange, onConnectionError);
+            document.getElementById('play-vs-player').innerText = 'Connecting...';
+            await connectSignalR(onGameUpdate, onMatchFound, onConnectionStateChange, onConnectionError, onWaitingForOpponent);
             joinMultiplayer();
         }
     };
@@ -113,8 +113,8 @@ export function setupUI() {
         if (!multiplayerActive) {
             multiplayerActive = true;
             document.getElementById('play-vs-bot').disabled = true;
-            document.getElementById('play-vs-bot').innerText = 'Searching...';
-            await connectSignalR(onGameUpdate, onMatchFound, onConnectionStateChange, onConnectionError);
+            document.getElementById('play-vs-bot').innerText = 'Connecting...';
+            await connectSignalR(onGameUpdate, onMatchFound, onConnectionStateChange, onConnectionError, onWaitingForOpponent);
             startBotMatch();
         }
     };
@@ -133,6 +133,11 @@ function onConnectionStateChange(state) {
 
 function onGameUpdate(gameState) {
     renderMultiplayerState(gameState);
+}
+
+function onWaitingForOpponent() {
+    showToast('Waiting for an opponent...', 5000);
+    document.getElementById('play-vs-player').innerText = 'Waiting...';
 }
 
 function onMatchFound(matchInfo) {

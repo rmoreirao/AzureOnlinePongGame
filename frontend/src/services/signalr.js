@@ -6,6 +6,9 @@ let lastReconnectAttempt = 0;
 let reconnectAttempts = 0;
 let keepAliveInterval = null;
 
+// Track the last sent paddle position
+let lastSentPaddleY = null;
+
 // Connection state enum for clarity
 export const SignalRConnectionState = {
     Connected: 'Connected',
@@ -14,7 +17,7 @@ export const SignalRConnectionState = {
     Disconnected: 'Disconnected',
 };
 
-export async function connectSignalR(onGameUpdate, onMatchFound, onConnectionStateChange, onConnectionError) {
+export async function connectSignalR(onGameUpdate, onMatchFound, onConnectionStateChange, onConnectionError, onWaitingForOpponent) {
     // Call your negotiate endpoint (local Azure Functions)
     try {
         const res = await fetch('http://localhost:7071/api/negotiate', { 
@@ -70,6 +73,28 @@ export async function connectSignalR(onGameUpdate, onMatchFound, onConnectionSta
         connection.on("MatchFound", (matchInfo) => {
             console.log("Match found event received", matchInfo);
             onMatchFound(matchInfo);
+        });
+        
+        // Add handler for WaitingForOpponent with proper casing
+        connection.on("WaitingForOpponent", () => {
+            console.log("Waiting for opponent");
+            if (onWaitingForOpponent) onWaitingForOpponent();
+        });
+        
+        // Add handler for AlreadyInGame
+        connection.on("AlreadyInGame", () => {
+            console.log("Already in a game");
+        });
+        
+        // Add handler for OpponentDisconnected
+        connection.on("OpponentDisconnected", (gameState) => {
+            console.log("Opponent disconnected", gameState);
+        });
+        
+        // Add handler for GameOver
+        connection.on("GameOver", (gameState) => {
+            console.log("Game over", gameState);
+            onGameUpdate(gameState); // Update the final game state
         });
         
         // Add handler for keepalive pongs
@@ -151,12 +176,16 @@ function isConnected() {
 export function sendPaddleUpdate(paddleY) {
     if (isConnected()) {
         try {
-            // Debounce paddle updates to prevent overwhelming the connection
-            if (!window.lastPaddleUpdate || Date.now() - window.lastPaddleUpdate > 50) {
+            // Only send updates if position changed or enough time has passed since last update
+            const positionChanged = lastSentPaddleY === null || Math.abs(paddleY - lastSentPaddleY) > 0.01;
+            const timeThresholdMet = !window.lastPaddleUpdate || Date.now() - window.lastPaddleUpdate > 50;
+            
+            if (positionChanged && timeThresholdMet) {
                 connection.invoke("UpdatePaddle", paddleY).catch(err => {
                     console.warn("Error sending paddle update:", err);
                 });
                 window.lastPaddleUpdate = Date.now();
+                lastSentPaddleY = paddleY;
             }
         } catch (err) {
             console.error("Error sending paddle update:", err);

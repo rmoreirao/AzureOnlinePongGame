@@ -22,5 +22,7 @@ namespace AzureOnlinePongGame.Models
         public int Player2Score { get; set; } = 0;
         [JsonProperty("gameOver")]
         public bool GameOver { get; set; } = false;
+        [JsonProperty("winner")]
+        public int Winner { get; set; } = 0; // 0=no winner, 1=player1, 2=player2
     }
 }
