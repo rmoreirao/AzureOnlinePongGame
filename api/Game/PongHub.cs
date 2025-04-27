@@ -124,13 +124,13 @@ namespace AzureOnlinePongGame.Game
                     await signalRMessages.AddAsync(new SignalRMessage
                     {
                         Target = "MatchFound",
-                        Arguments = new object[] { new { opponent = p2, side = 1 } },
+                        Arguments = new object[] { new Dictionary<string, object> { ["opponent"] = p2, ["side"] = 1 } },
                         ConnectionId = p1
                     });
                     await signalRMessages.AddAsync(new SignalRMessage
                     {
                         Target = "MatchFound",
-                        Arguments = new object[] { new { opponent = p1, side = 2 } },
+                        Arguments = new object[] { new Dictionary<string, object> { ["opponent"] = p1, ["side"] = 2 } },
                         ConnectionId = p2
                     });
                 }
@@ -155,7 +155,7 @@ namespace AzureOnlinePongGame.Game
             await signalRMessages.AddAsync(new SignalRMessage
             {
                 Target = "MatchFound",
-                Arguments = new object[] { new { opponent = "Bot", side = 1, isBot = true } },
+                Arguments = new object[] { new Dictionary<string, object> { ["opponent"] = "Bot", ["side"] = 1, ["isBot"] = true } },
                 ConnectionId = playerId
             });
         }
@@ -210,9 +210,17 @@ namespace AzureOnlinePongGame.Game
         {
             // Always get the latest session from Redis
             var session1 = await GetSessionAsync(session.Player1Id);
-            if (session1 == null) return;
+            if (session1 == null)
+            {
+                Console.WriteLine($"[GameLoop] Session for {session.Player1Id} is null. Stopping loop.");
+                return;
+            }
             var state = session1.State;
-            if (state.GameOver) return;
+            if (state.GameOver)
+            {
+                Console.WriteLine($"[GameLoop] Game over for session {session.Player1Id}:{session.Player2Id}. Stopping loop.");
+                return;
+            }
             // Ball movement
             state.BallX += state.BallVX;
             state.BallY += state.BallVY;
@@ -247,6 +255,7 @@ namespace AzureOnlinePongGame.Game
             session1.State = state;
             await UpdateSessionForBothPlayersAsync(session1);
             // Broadcast state
+            Console.WriteLine($"[GameLoop] Broadcasting state: P1Y={state.Player1PaddleY}, P2Y={state.Player2PaddleY}, Ball=({state.BallX},{state.BallY}), Score={state.Player1Score}:{state.Player2Score}, GameOver={state.GameOver}");
             await signalRMessages.AddAsync(new SignalRMessage
             {
                 Target = "GameUpdate",

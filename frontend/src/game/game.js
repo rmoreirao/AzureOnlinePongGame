@@ -35,15 +35,35 @@ function draw(ctx) {
     ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
     ctx.fillStyle = '#222';
     ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
-    // Draw paddles
-    ctx.fillStyle = '#fff';
-    ctx.fillRect(16, playerY, PADDLE_WIDTH, PADDLE_HEIGHT);
-    ctx.fillRect(CANVAS_WIDTH - 32, aiY, PADDLE_WIDTH, PADDLE_HEIGHT);
+    // Draw paddles with color indicating local vs opponent
+    if (isMultiplayer) {
+        if (multiplayerSide === 1) {
+            // Local player left, opponent right
+            ctx.fillStyle = '#4caf50'; // Local paddle: green
+            ctx.fillRect(16, playerY, PADDLE_WIDTH, PADDLE_HEIGHT);
+            ctx.fillStyle = '#fff'; // Opponent paddle: white
+            ctx.fillRect(CANVAS_WIDTH - 32, aiY, PADDLE_WIDTH, PADDLE_HEIGHT);
+        } else {
+            // Local player right, opponent left
+            ctx.fillStyle = '#fff'; // Opponent paddle: white
+            ctx.fillRect(16, aiY, PADDLE_WIDTH, PADDLE_HEIGHT);
+            ctx.fillStyle = '#4caf50'; // Local paddle: green
+            ctx.fillRect(CANVAS_WIDTH - 32, playerY, PADDLE_WIDTH, PADDLE_HEIGHT);
+        }
+    } else {
+        // Single player: always left
+        ctx.fillStyle = '#4caf50';
+        ctx.fillRect(16, playerY, PADDLE_WIDTH, PADDLE_HEIGHT);
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(CANVAS_WIDTH - 32, aiY, PADDLE_WIDTH, PADDLE_HEIGHT);
+    }
     // Draw ball
+    ctx.fillStyle = '#fff';
     ctx.fillRect(ballX, ballY, BALL_SIZE, BALL_SIZE);
     // Draw scores
     ctx.font = '48px monospace';
     ctx.textAlign = 'center';
+    ctx.fillStyle = '#fff';
     ctx.fillText(playerScore, CANVAS_WIDTH / 2 - 50, 60);
     ctx.fillText(aiScore, CANVAS_WIDTH / 2 + 50, 60);
     // Game over
@@ -54,15 +74,21 @@ function draw(ctx) {
 }
 
 function update() {
-    if (gameOver) return;
+    if (gameOver) {
+        // Stop the multiplayer interval if game is over
+        if (isMultiplayer && window.multiplayerInterval) {
+            clearInterval(window.multiplayerInterval);
+            window.multiplayerInterval = null;
+        }
+        return;
+    }
     // Player paddle movement
     if (isMultiplayer) {
         if (upPressed) localPlayerY -= PADDLE_SPEED;
         if (downPressed) localPlayerY += PADDLE_SPEED;
         localPlayerY = Math.max(0, Math.min(CANVAS_HEIGHT - PADDLE_HEIGHT, localPlayerY));
         playerY = localPlayerY;
-        if (sendPaddleUpdate) {
-            console.log("Sending paddle update:", localPlayerY);
+        if (!gameOver && sendPaddleUpdate) {
             sendPaddleUpdate(localPlayerY);
         }
     } else {
@@ -172,10 +198,11 @@ export function renderMultiplayerState(state) {
         return;
     }
 
-    // Only update opponent paddle and ball from server
     if (multiplayerSide === 1) {
+        playerY = state.player1PaddleY;
         aiY = state.player2PaddleY;
     } else {
+        playerY = state.player2PaddleY;
         aiY = state.player1PaddleY;
     }
     ballX = state.ballX;
