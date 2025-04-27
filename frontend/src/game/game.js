@@ -23,6 +23,7 @@ let gameOver = false;
 let isMultiplayer = false;
 let multiplayerSide = 1; // 1 = left, 2 = right
 let sendPaddleUpdate = null;
+let isGameActive = false;
 
 function resetBall() {
     ballX = (CANVAS_WIDTH - BALL_SIZE) / 2;
@@ -138,7 +139,7 @@ function update() {
 function gameLoop(ctx) {
     update();
     draw(ctx);
-    if (!isMultiplayer) {
+    if (!isMultiplayer && isGameActive) {
         requestAnimationFrame(() => gameLoop(ctx));
     }
 }
@@ -213,6 +214,23 @@ export function renderMultiplayerState(state) {
     draw(currentCtx);
 }
 
+export function startLocalGame() {
+    // Reset game state
+    isMultiplayer = false;
+    isGameActive = true;
+    playerScore = 0;
+    aiScore = 0;
+    gameOver = false;
+    playerY = (CANVAS_HEIGHT - PADDLE_HEIGHT) / 2;
+    aiY = (CANVAS_HEIGHT - PADDLE_HEIGHT) / 2;
+    resetBall();
+    
+    // Start game loop
+    if (currentCtx) {
+        gameLoop(currentCtx);
+    }
+}
+
 let currentCtx = null;
 
 export function initGame() {
@@ -222,7 +240,7 @@ export function initGame() {
     resetBall();
     document.addEventListener('keydown', handleKeyDown);
     document.addEventListener('keyup', handleKeyUp);
-    if (!isMultiplayer) {
-        gameLoop(ctx);
-    }
+    
+    // Initial draw to show game board but don't start game loop
+    draw(ctx);
 }

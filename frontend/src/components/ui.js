@@ -1,4 +1,4 @@
-import { enableMultiplayer, renderMultiplayerState } from '../game/game.js';
+import { enableMultiplayer, renderMultiplayerState, startLocalGame } from '../game/game.js';
 import { connectSignalR, joinMultiplayer, sendPaddleUpdate, startBotMatch, SignalRConnectionState } from '../services/signalr.js';
 
 let multiplayerActive = false;
@@ -86,6 +86,19 @@ function onConnectionError(err) {
 
 // Handles UI button events and visibility
 export function setupUI() {
+    document.getElementById('play-vs-local').onclick = () => {
+        // Reset any active multiplayer state
+        multiplayerActive = false;
+        document.getElementById('play-vs-player').disabled = false;
+        document.getElementById('play-vs-player').innerText = 'Play Online';
+        document.getElementById('play-vs-bot').disabled = false;
+        document.getElementById('play-vs-bot').innerText = 'Play vs Bot';
+        
+        // Start local game
+        startLocalGame();
+        showToast('Starting local game');
+    };
+    
     document.getElementById('play-vs-ai').onclick = () => showToast('Play vs AI not implemented');
     document.getElementById('play-vs-player').onclick = async () => {
         if (!multiplayerActive) {

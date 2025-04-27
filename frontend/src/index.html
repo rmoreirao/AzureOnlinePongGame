@@ -11,6 +11,7 @@
         <h1>Azure Multiplayer Pong</h1>
         <canvas id="pong-canvas" width="800" height="600"></canvas>
         <div id="ui">
+            <button id="play-vs-local">Player vs Local</button>
             <button id="play-vs-ai">Play vs AI</button>
             <button id="play-vs-player">Play Online</button>
             <button id="play-vs-bot">Play vs Bot</button>
@@ -18,9 +19,12 @@
             <button id="login">Login</button>
             <button id="logout" style="display:none;">Logout</button>
         </div>
+        <div id="connection-status" style="display:none;"></div>
         <div id="chat" style="display:none;"></div>
     </div>
-    <script type="module" src="main.js"></script>
+    <!-- SignalR and MessagePack libraries -->
     <script src="https://cdn.jsdelivr.net/npm/@microsoft/signalr@7.0.12/dist/browser/signalr.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@microsoft/signalr-protocol-msgpack@7.0.12/dist/browser/signalr-protocol-msgpack.min.js"></script>
+    <script type="module" src="main.js"></script>
 </body>
 </html>

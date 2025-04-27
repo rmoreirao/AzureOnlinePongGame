@@ -152,14 +152,25 @@ sequenceDiagram
 ### 3. Game State Update Flow
 This flow shows the core game loop interaction. The backend game loop runs approximately every 33 milliseconds (~30 FPS), reads and writes the game state to Redis, and broadcasts the updated state to connected clients via SignalR.
 
+**Implementation Details:**
+- **Trigger:** The game loop is implemented using a `System.Threading.Timer` within the Azure Function host. A new timer instance is created and started within the `JoinMatchmaking` or `StartBotMatch` function when a game session begins. This timer calls the appropriate game loop logic (`GameLoopRedisWithRetry` or `GameLoopWithBotWithRetry`) periodically for each active game session.
+- **Update Logic:** Inside the loop, the function retrieves the current game state from Redis. It then calculates the new ball position based on its velocity, checks for collisions with paddles and boundaries, updates paddle positions based on recent client inputs (if applicable, though often client-side prediction is used for paddles), updates scores if a point is scored, and checks for game-ending conditions.
+- **Frequency:** The target frequency (e.g., ~30 FPS or every ~33ms) is set by the `period` parameter (`GAME_LOOP_INTERVAL_MS`) when creating the `System.Threading.Timer`.
+- **State Persistence:** After calculations, the updated game state is written back to Redis using `UpdateSessionForBothPlayersAsync`.
+- **Broadcasting:** Finally, the new state is broadcast to all clients connected to that specific game session via the SignalR Service using `SendSignalRMessageWithRetry`.
+
 ```mermaid
 sequenceDiagram
-    participant GameLoop
+    participant Timer/Trigger
+    participant GameLoopFunction
     participant Redis
     participant SignalR
     participant Client
-    GameLoop->>Redis: Read/Write state
-    GameLoop-->>SignalR: GameUpdate
+    Timer/Trigger->>GameLoopFunction: Invoke periodically
+    GameLoopFunction->>Redis: Read current state
+    GameLoopFunction->>GameLoopFunction: Calculate new state (ball, collisions, score)
+    GameLoopFunction->>Redis: Write updated state
+    GameLoopFunction-->>SignalR: GameUpdate (broadcast to game group)
     SignalR-->>Client: GameUpdate
 ```
 

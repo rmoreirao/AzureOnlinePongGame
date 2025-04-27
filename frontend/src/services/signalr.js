@@ -2,6 +2,9 @@
 // Uses global signalR object from CDN
 
 let connection = null;
+let lastReconnectAttempt = 0;
+let reconnectAttempts = 0;
+let keepAliveInterval = null;
 
 // Connection state enum for clarity
 export const SignalRConnectionState = {
@@ -13,37 +16,131 @@ export const SignalRConnectionState = {
 
 export async function connectSignalR(onGameUpdate, onMatchFound, onConnectionStateChange, onConnectionError) {
     // Call your negotiate endpoint (local Azure Functions)
-    const res = await fetch('http://localhost:7071/api/negotiate', { method: 'POST' });
-    const info = await res.json();
-
-    connection = new signalR.HubConnectionBuilder()
-        .withUrl(info.url, { accessTokenFactory: () => info.accessToken })
-        .withAutomaticReconnect()
-        .build();
-
-    // Expose connection globally for bot mode
-    window.signalRConnection = connection;
-
-    connection.on("GameUpdate", onGameUpdate);
-    connection.on("MatchFound", onMatchFound);
-
-    // Connection state handlers
-    if (onConnectionStateChange) {
-        connection.onclose((err) => {
-            if (onConnectionStateChange) onConnectionStateChange(SignalRConnectionState.Disconnected);
-            if (onConnectionError && err) onConnectionError(err);
-        });
-        connection.onreconnecting(() => onConnectionStateChange(SignalRConnectionState.Reconnecting));
-        connection.onreconnected(() => onConnectionStateChange(SignalRConnectionState.Connected));
-    }
-
     try {
-        await connection.start();
-        console.log("Connected to SignalR");
-        if (onConnectionStateChange) onConnectionStateChange(SignalRConnectionState.Connected);
+        const res = await fetch('http://localhost:7071/api/negotiate', { 
+            method: 'POST',
+            headers: {
+                'Cache-Control': 'no-cache',
+            }
+        });
+        const info = await res.json();
+        
+        // Configure custom retry policy with exponential backoff
+        const retryPolicy = {
+            nextRetryDelayInMilliseconds: (retryContext) => {
+                reconnectAttempts = retryContext.previousRetryCount;
+                console.log(`SignalR reconnection attempt ${reconnectAttempts}`);
+                
+                // If we've retried too many times, stop
+                if (retryContext.previousRetryCount >= 10) {
+                    console.log("Too many retries, stopping reconnect attempts");
+                    return null;
+                }
+                
+                // Implement exponential backoff with jitter
+                const backoffDelay = Math.min(1000 * Math.pow(2, retryContext.previousRetryCount), 30000);
+                const jitter = Math.random() * 1000;
+                const delay = backoffDelay + jitter;
+                
+                console.log(`Next reconnection attempt in ${Math.round(delay / 1000)} seconds`);
+                return delay;
+            }
+        };
+        
+        connection = new signalR.HubConnectionBuilder()
+            .withUrl(info.url, { 
+                accessTokenFactory: () => info.accessToken,
+                transport: signalR.HttpTransportType.WebSockets,
+                skipNegotiation: true
+            })
+            .configureLogging(signalR.LogLevel.Information)
+            .withAutomaticReconnect(retryPolicy)
+            .withHubProtocol(new signalR.protocols.msgpack.MessagePackHubProtocol())
+            .build();
+
+        // Expose connection globally for bot mode
+        window.signalRConnection = connection;
+
+        // Add debug logging for incoming messages
+        connection.on("GameUpdate", (gameState) => {
+            console.debug("Received game update", gameState);
+            onGameUpdate(gameState);
+        });
+        
+        connection.on("MatchFound", (matchInfo) => {
+            console.log("Match found event received", matchInfo);
+            onMatchFound(matchInfo);
+        });
+        
+        // Add handler for keepalive pongs
+        connection.on("Pong", (timestamp) => {
+            console.debug("Received pong from server", new Date(timestamp));
+        });
+
+        // Connection state handlers
+        if (onConnectionStateChange) {
+            connection.onclose((err) => {
+                console.error("SignalR connection closed", err);
+                if (onConnectionStateChange) onConnectionStateChange(SignalRConnectionState.Disconnected);
+                if (onConnectionError && err) onConnectionError(err);
+                
+                // Clean up keepalive on disconnect
+                stopKeepAlive();
+            });
+            
+            connection.onreconnecting((err) => {
+                console.warn("SignalR reconnecting due to error", err);
+                if (onConnectionStateChange) onConnectionStateChange(SignalRConnectionState.Reconnecting);
+            });
+            
+            connection.onreconnected((connectionId) => {
+                console.log("SignalR reconnected with ID:", connectionId);
+                reconnectAttempts = 0;
+                if (onConnectionStateChange) onConnectionStateChange(SignalRConnectionState.Connected);
+                
+                // Restart keepalive after reconnection
+                startKeepAlive();
+            });
+        }
+
+        try {
+            await connection.start();
+            console.log("Connected to SignalR");
+            if (onConnectionStateChange) onConnectionStateChange(SignalRConnectionState.Connected);
+            
+            // Start sending keepalive messages to prevent disconnections
+            startKeepAlive();
+        } catch (err) {
+            console.error("SignalR connection error:", err);
+            if (onConnectionStateChange) onConnectionStateChange(SignalRConnectionState.Disconnected);
+            if (onConnectionError) onConnectionError(err);
+        }
     } catch (err) {
-        console.error("SignalR connection error:", err);
-        if (onConnectionStateChange) onConnectionStateChange(SignalRConnectionState.Disconnected);
+        console.error("Error fetching negotiate endpoint:", err);
+        if (onConnectionError) onConnectionError(err);
+    }
+}
+
+// Start sending regular keepalive messages
+function startKeepAlive() {
+    stopKeepAlive(); // Clear any existing interval
+    
+    // Send keepalive every 15 seconds
+    keepAliveInterval = setInterval(() => {
+        if (isConnected()) {
+            console.debug("Sending keepalive");
+            connection.invoke("KeepAlive").catch(err => {
+                console.warn("Error sending keepalive:", err);
+            });
+        }
+    }, 15000);
+}
+
+// Stop sending keepalive messages
+function stopKeepAlive() {
+    if (keepAliveInterval) {
+        clearInterval(keepAliveInterval);
+        keepAliveInterval = null;
     }
 }
 
@@ -53,18 +150,56 @@ function isConnected() {
 
 export function sendPaddleUpdate(paddleY) {
     if (isConnected()) {
-        connection.invoke("UpdatePaddle", { y: paddleY });
+        try {
+            // Debounce paddle updates to prevent overwhelming the connection
+            if (!window.lastPaddleUpdate || Date.now() - window.lastPaddleUpdate > 50) {
+                connection.invoke("UpdatePaddle", paddleY).catch(err => {
+                    console.warn("Error sending paddle update:", err);
+                });
+                window.lastPaddleUpdate = Date.now();
+            }
+        } catch (err) {
+            console.error("Error sending paddle update:", err);
+        }
     }
 }
 
 export function joinMultiplayer() {
     if (isConnected()) {
-        connection.invoke("JoinMatchmaking");
+        connection.invoke("JoinMatchmaking").catch(err => {
+            console.error("Error joining matchmaking:", err);
+        });
     }
 }
 
 export function startBotMatch() {
     if (isConnected()) {
-        connection.invoke("StartBotMatch");
+        connection.invoke("StartBotMatch").catch(err => {
+            console.error("Error starting bot match:", err);
+        });
     }
 }
+
+// Helper function to check connection health
+export function checkConnection() {
+    if (!connection) {
+        console.log("SignalR connection not initialized");
+        return false;
+    }
+    
+    console.log("SignalR connection state:", connection.state);
+    return connection.state === signalR.HubConnectionState.Connected;
+}
+
+// Explicitly disconnect when the user leaves the page
+window.addEventListener('beforeunload', () => {
+    if (connection) {
+        try {
+            // Clean up resources
+            stopKeepAlive();
+            connection.stop();
+        } catch (err) {
+            console.warn("Error during connection cleanup:", err);
+        }
+    }
+});
