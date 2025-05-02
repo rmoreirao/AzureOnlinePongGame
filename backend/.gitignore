@@ -1,0 +1,41 @@
+# .NET build output
+bin/
+obj/
+
+# User-specific files
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Visual Studio Code
+.vscode/
+
+# Rider
+.idea/
+*.sln.iml
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Local settings
+appsettings.*.json
+!appsettings.json
+
+# Test results
+TestResults/
+
+# Backup & temp files
+~$*
+*.tmp
+*.bak
+*.swp
+*.swo
+*.temp
+
+# Azure Functions local settings
+local.settings.json

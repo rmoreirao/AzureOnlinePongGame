@@ -31,10 +31,25 @@ builder.Services.AddHealthChecks()
         tags: new string[] { "ready" }); // Tag for readiness probes
 
 // Register SignalR
-builder.Services.AddSignalR();
+builder.Services.AddSignalR()
+    .AddMessagePackProtocol()
+    .AddNewtonsoftJsonProtocol(options =>
+    {
+        options.PayloadSerializerSettings.ContractResolver = new Newtonsoft.Json.Serialization.CamelCasePropertyNamesContractResolver();
+    });
+
+// Configure JSON serialization for the rest of the application to use camelCase
+builder.Services.Configure<Microsoft.AspNetCore.Http.Json.JsonOptions>(options =>
+{
+    options.SerializerOptions.PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase;
+});
 
 // Register GameLoopService as a Hosted Service
 builder.Services.AddHostedService<AzureOnlinePongGame.Services.GameLoopService>();
+
+// Add Swagger services
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen();
 
 // *** End Migration Additions ***
 
@@ -44,6 +59,8 @@ var app = builder.Build();
 // Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())
 {
+    app.UseSwagger();
+    app.UseSwaggerUI();
     app.MapOpenApi();
 }
 
@@ -65,7 +82,7 @@ app.MapGet("/healthcheck", async (GameStateService gameStateService, ILogger<Pro
         try
         {
             waitingPlayersCount = await gameStateService.GetMatchmakingQueueSizeAsync();
-            activeGamesCount = await gameStateService.GetActiveGameCountAsync();
+            activeGamesCount = gameStateService.GetActiveGameCount();
         }
         catch (Exception ex)
         {

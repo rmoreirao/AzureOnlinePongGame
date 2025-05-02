@@ -92,5 +92,32 @@ namespace AzureOnlinePongGame
             _logger.LogDebug($"Received keepalive from {Context.ConnectionId}");
             await Clients.Caller.SendAsync("Pong", System.DateTime.UtcNow);
         }
+
+        public override async Task OnDisconnectedAsync(Exception? exception)
+        {
+            var connectionId = Context.ConnectionId;
+            _logger.LogInformation($"Client disconnected: {connectionId}");
+
+            await _gameStateService.RemoveFromMatchmakingAsync(connectionId);
+
+            var session = await _gameStateService.GetSessionAsync(connectionId);
+            if (session != null && !session.State.GameOver)
+            {
+                _logger.LogInformation($"Player {connectionId} disconnected during active game session. Ending session.");
+                session.State.GameOver = true;
+                session.State.Winner = session.Player1Id == connectionId ? 2 : 1;
+                session.LastUpdateTime = System.DateTime.UtcNow;
+
+                string opponentId = session.Player1Id == connectionId ? session.Player2Id : session.Player1Id;
+                if (!opponentId.StartsWith("bot_"))
+                {
+                    await Clients.Client(opponentId).SendAsync("OpponentDisconnected", session.State);
+                }
+
+                await _gameStateService.UpdateSessionForBothPlayersAsync(session);
+            }
+
+            await base.OnDisconnectedAsync(exception);
+        }
     }
 }

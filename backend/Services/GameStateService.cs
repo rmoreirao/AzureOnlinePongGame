@@ -225,7 +225,11 @@ namespace AzureOnlinePongGame.Services // Changed namespace
                 var db = GetDatabase();
                 string sessionKey = GetSessionKey(session.Player1Id, session.Player2Id);
                 string playerMapKey = GetPlayerMapKey(playerId);
-                string sessionJson = JsonConvert.SerializeObject(session);
+                string sessionJson = JsonConvert.SerializeObject(session, new JsonSerializerSettings {
+                    ContractResolver = new Newtonsoft.Json.Serialization.CamelCasePropertyNamesContractResolver(),
+                    NullValueHandling = NullValueHandling.Ignore,
+                    DefaultValueHandling = DefaultValueHandling.Ignore
+                });
 
                 // Use a transaction to ensure atomicity
                 var tran = db.CreateTransaction();
@@ -259,7 +263,11 @@ namespace AzureOnlinePongGame.Services // Changed namespace
                 string player1MapKey = GetPlayerMapKey(session.Player1Id);
                 string player2MapKey = GetPlayerMapKey(session.Player2Id);
                 session.LastUpdateTime = DateTime.UtcNow; // Update timestamp before saving
-                string sessionJson = JsonConvert.SerializeObject(session);
+                string sessionJson = JsonConvert.SerializeObject(session, new JsonSerializerSettings {
+                    ContractResolver = new Newtonsoft.Json.Serialization.CamelCasePropertyNamesContractResolver(),
+                    NullValueHandling = NullValueHandling.Ignore,
+                    DefaultValueHandling = DefaultValueHandling.Ignore
+                });
 
                 // Use a transaction for atomicity
                 var tran = db.CreateTransaction();

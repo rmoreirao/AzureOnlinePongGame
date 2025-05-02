@@ -187,35 +187,43 @@ export function enableMultiplayer(side, sendUpdateFn) {
 
 export function renderMultiplayerState(state) {
     console.log("Received game state from server:", JSON.stringify(state));
+    console.log("Game state keys:", Object.keys(state));
+    if (state) {
+        for (const key in state) {
+            if (Object.prototype.hasOwnProperty.call(state, key)) {
+                console.log(`Key: ${key}, Value:`, state[key]);
+            }
+        }
+    }
 
-    // Defensive: check for required properties
+    // Defensive: check for required properties (new structure)
     if (!state || typeof state !== 'object') {
         console.error("Invalid game state:", state);
         return;
     }
     if (
-        state.player1PaddleY === undefined ||
-        state.player2PaddleY === undefined ||
-        state.ballX === undefined ||
-        state.ballY === undefined ||
-        state.player1Score === undefined ||
-        state.player2Score === undefined
+        !state.leftPaddle || typeof state.leftPaddle.y !== 'number' ||
+        !state.rightPaddle || typeof state.rightPaddle.y !== 'number' ||
+        !state.ball || typeof state.ball.x !== 'number' || typeof state.ball.y !== 'number' ||
+        typeof state.leftScore !== 'number' || typeof state.rightScore !== 'number'
     ) {
         console.error("Game state missing properties:", state);
         return;
     }
 
     if (multiplayerSide === 1) {
-        playerY = state.player1PaddleY;
-        aiY = state.player2PaddleY;
+        playerY = state.leftPaddle.y;
+        aiY = state.rightPaddle.y;
+        playerScore = state.leftScore;
+        aiScore = state.rightScore;
     } else {
-        playerY = state.player2PaddleY;
-        aiY = state.player1PaddleY;
+        playerY = state.rightPaddle.y;
+        aiY = state.leftPaddle.y;
+        playerScore = state.rightScore;
+        aiScore = state.leftScore;
     }
-    ballX = state.ballX;
-    ballY = state.ballY;
-    playerScore = multiplayerSide === 1 ? state.player1Score : state.player2Score;
-    aiScore = multiplayerSide === 1 ? state.player2Score : state.player1Score;
+    ballX = state.ball.x;
+    ballY = state.ball.y;
     gameOver = state.gameOver;
     draw(currentCtx);
 }

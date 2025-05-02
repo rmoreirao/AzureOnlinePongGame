@@ -12,4 +12,8 @@ Thumbs.db
 # VS Code settings
 .vscode/
 settings.json
-backend/appsettings.*.json
+
+
+# Local settings
+appsettings.*.json
+!appsettings.json

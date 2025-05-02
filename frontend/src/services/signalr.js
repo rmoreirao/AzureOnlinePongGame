@@ -18,130 +18,83 @@ export const SignalRConnectionState = {
 };
 
 export async function connectSignalR(onGameUpdate, onMatchFound, onConnectionStateChange, onConnectionError, onWaitingForOpponent) {
-    // Call your negotiate endpoint (local Azure Functions)
-    try {
-        const res = await fetch('http://localhost:7071/api/negotiate', { 
-            method: 'POST',
-            headers: {
-                'Cache-Control': 'no-cache',
-            }
-        });
-        const info = await res.json();
-        
-        // Configure custom retry policy with exponential backoff
-        const retryPolicy = {
-            nextRetryDelayInMilliseconds: (retryContext) => {
-                reconnectAttempts = retryContext.previousRetryCount;
-                console.log(`SignalR reconnection attempt ${reconnectAttempts}`);
-                
-                // If we've retried too many times, stop
-                if (retryContext.previousRetryCount >= 10) {
-                    console.log("Too many retries, stopping reconnect attempts");
-                    return null;
-                }
-                
-                // Implement exponential backoff with jitter
-                const backoffDelay = Math.min(1000 * Math.pow(2, retryContext.previousRetryCount), 30000);
-                const jitter = Math.random() * 1000;
-                const delay = backoffDelay + jitter;
-                
-                console.log(`Next reconnection attempt in ${Math.round(delay / 1000)} seconds`);
-                return delay;
-            }
-        };
-        
-        connection = new signalR.HubConnectionBuilder()
-            .withUrl(info.url, { 
-                accessTokenFactory: () => info.accessToken,
-                transport: signalR.HttpTransportType.WebSockets,
-                skipNegotiation: true
-            })
-            .configureLogging(signalR.LogLevel.Information)
-            .withAutomaticReconnect(retryPolicy)
-            .withHubProtocol(new signalR.protocols.msgpack.MessagePackHubProtocol())
-            .build();
+    const backendUrl = "https://localhost:6001/pong"; // Updated to use HTTPS
 
-        // Expose connection globally for bot mode
-        window.signalRConnection = connection;
+    connection = new signalR.HubConnectionBuilder()
+        .withUrl(backendUrl, {
+            transport: signalR.HttpTransportType.WebSockets,
+            skipNegotiation: true
+        })
+        .configureLogging(signalR.LogLevel.Information)
+        .withAutomaticReconnect()
+        .withHubProtocol(new signalR.protocols.msgpack.MessagePackHubProtocol())
+        .build();
 
-        // Add debug logging for incoming messages
-        connection.on("GameUpdate", (gameState) => {
-            console.debug("Received game update", gameState);
-            onGameUpdate(gameState);
-        });
-        
-        connection.on("MatchFound", (matchInfo) => {
-            console.log("Match found event received", matchInfo);
-            onMatchFound(matchInfo);
-        });
-        
-        // Add handler for WaitingForOpponent with proper casing
-        connection.on("WaitingForOpponent", () => {
-            console.log("Waiting for opponent");
-            if (onWaitingForOpponent) onWaitingForOpponent();
-        });
-        
-        // Add handler for AlreadyInGame
-        connection.on("AlreadyInGame", () => {
-            console.log("Already in a game");
-        });
-        
-        // Add handler for OpponentDisconnected
-        connection.on("OpponentDisconnected", (gameState) => {
-            console.log("Opponent disconnected", gameState);
-        });
-        
-        // Add handler for GameOver
-        connection.on("GameOver", (gameState) => {
-            console.log("Game over", gameState);
-            onGameUpdate(gameState); // Update the final game state
-        });
-        
-        // Add handler for keepalive pongs
-        connection.on("Pong", (timestamp) => {
-            console.debug("Received pong from server", new Date(timestamp));
-        });
+    window.signalRConnection = connection;
 
-        // Connection state handlers
-        if (onConnectionStateChange) {
-            connection.onclose((err) => {
-                console.error("SignalR connection closed", err);
-                if (onConnectionStateChange) onConnectionStateChange(SignalRConnectionState.Disconnected);
-                if (onConnectionError && err) onConnectionError(err);
-                
-                // Clean up keepalive on disconnect
-                stopKeepAlive();
-            });
-            
-            connection.onreconnecting((err) => {
-                console.warn("SignalR reconnecting due to error", err);
-                if (onConnectionStateChange) onConnectionStateChange(SignalRConnectionState.Reconnecting);
-            });
-            
-            connection.onreconnected((connectionId) => {
-                console.log("SignalR reconnected with ID:", connectionId);
-                reconnectAttempts = 0;
-                if (onConnectionStateChange) onConnectionStateChange(SignalRConnectionState.Connected);
-                
-                // Restart keepalive after reconnection
-                startKeepAlive();
-            });
-        }
+    // Add debug logging for incoming messages
+    connection.on("GameUpdate", (gameState) => {
+        console.debug("Received game update", gameState);
+        onGameUpdate(gameState);
+    });
 
-        try {
-            await connection.start();
-            console.log("Connected to SignalR");
-            if (onConnectionStateChange) onConnectionStateChange(SignalRConnectionState.Connected);
-            
-            // Start sending keepalive messages to prevent disconnections
-            startKeepAlive();
-        } catch (err) {
-            console.error("SignalR connection error:", err);
+    connection.on("MatchFound", (matchInfo) => {
+        console.log("Match found event received", matchInfo);
+        onMatchFound(matchInfo);
+    });
+
+    connection.on("WaitingForOpponent", () => {
+        console.log("Waiting for opponent");
+        if (onWaitingForOpponent) onWaitingForOpponent();
+    });
+
+    connection.on("AlreadyInGame", () => {
+        console.log("Already in a game");
+    });
+
+    connection.on("OpponentDisconnected", (gameState) => {
+        console.log("Opponent disconnected", gameState);
+    });
+
+    connection.on("GameOver", (gameState) => {
+        console.log("Game over", gameState);
+        onGameUpdate(gameState); // Update the final game state
+    });
+
+    connection.on("Pong", (timestamp) => {
+        console.debug("Received pong from server", new Date(timestamp));
+    });
+
+    // Connection state handlers
+    if (onConnectionStateChange) {
+        connection.onclose((err) => {
+            console.error("SignalR connection closed", err);
             if (onConnectionStateChange) onConnectionStateChange(SignalRConnectionState.Disconnected);
-            if (onConnectionError) onConnectionError(err);
-        }
+            if (onConnectionError && err) onConnectionError(err);
+            stopKeepAlive();
+        });
+
+        connection.onreconnecting((err) => {
+            console.warn("SignalR reconnecting due to error", err);
+            if (onConnectionStateChange) onConnectionStateChange(SignalRConnectionState.Reconnecting);
+        });
+
+        connection.onreconnected((connectionId) => {
+            console.log("SignalR reconnected with ID:", connectionId);
+            reconnectAttempts = 0;
+            if (onConnectionStateChange) onConnectionStateChange(SignalRConnectionState.Connected);
+            startKeepAlive();
+        });
+    }
+
+    try {
+        await connection.start();
+        console.log("Connected to SignalR");
+        if (onConnectionStateChange) onConnectionStateChange(SignalRConnectionState.Connected);
+        startKeepAlive();
     } catch (err) {
-        console.error("Error fetching negotiate endpoint:", err);
+        console.error("SignalR connection error:", err);
+        if (onConnectionStateChange) onConnectionStateChange(SignalRConnectionState.Disconnected);
         if (onConnectionError) onConnectionError(err);
     }
 }
