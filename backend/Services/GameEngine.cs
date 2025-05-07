@@ -16,7 +16,7 @@ namespace AzureOnlinePongGame.Services
         public const int WIN_SCORE = 5;
         
         // Added buffer for collision detection to be more forgiving
-        private const float COLLISION_BUFFER = 2.0f;
+        private const float COLLISION_BUFFER = 4.0f; // Increased from 2.0f
 
         // Move paddle towards target
         private static float MoveTowards(float current, float target, float maxDelta)
@@ -133,6 +133,10 @@ namespace AzureOnlinePongGame.Services
             // Add a small buffer to make collision detection more forgiving
             paddleY -= COLLISION_BUFFER;
             paddleHeight += COLLISION_BUFFER * 2;
+            
+            // Add horizontal buffer for edge cases
+            paddleX -= COLLISION_BUFFER / 2;
+            paddleWidth += COLLISION_BUFFER;
             
             // Vertical collision check
             if (currBallY + BALL_SIZE < paddleY || currBallY > paddleY + paddleHeight)

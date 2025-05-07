@@ -7,6 +7,7 @@ using AzureOnlinePongGame.Services;
 using Microsoft.AspNetCore.SignalR;
 using AzureOnlinePongGame.Models;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace AzureOnlinePongGame.Services
 {
@@ -19,13 +20,14 @@ namespace AzureOnlinePongGame.Services
         // Default interval at ~30 FPS
         private TimeSpan _baseInterval = TimeSpan.FromMilliseconds(33);
         
-        // State update intervals (send to Redis less frequently)
-        private readonly TimeSpan _stateUpdateInterval = TimeSpan.FromMilliseconds(100);
+        // Reduced: State update intervals (send to Redis less frequently)
+        private readonly TimeSpan _stateUpdateInterval = TimeSpan.FromMilliseconds(500); // Increased from 100ms to 500ms
         
         // Client sync interval (send to clients even less frequently)
         private readonly TimeSpan _stateSyncInterval = TimeSpan.FromMilliseconds(100);
         
         private DateTime _lastStateSyncTime = DateTime.MinValue;
+        private DateTime _lastRedisUpdateTime = DateTime.MinValue; // Track last Redis update
         private const float DELTA_TIME = 0.033f; // 33ms per tick
         
         // Cache of active sessions to reduce Redis calls
@@ -35,6 +37,9 @@ namespace AzureOnlinePongGame.Services
         // Track when the cache was last refreshed
         private DateTime _lastCacheRefresh = DateTime.MinValue;
         private readonly TimeSpan _cacheRefreshInterval = TimeSpan.FromSeconds(5);
+        
+        // Track sessions that need to be persisted to Redis
+        private readonly HashSet<string> _sessionsWithCriticalChanges = new HashSet<string>();
 
         public GameLoopService(GameStateService gameStateService, IHubContext<PongHub> hubContext, ILogger<GameLoopService> logger)
         {
@@ -69,6 +74,7 @@ namespace AzureOnlinePongGame.Services
                 {
                     var now = DateTime.UtcNow;
                     bool shouldSyncState = (now - _lastStateSyncTime) >= _stateSyncInterval;
+                    bool shouldUpdateRedis = (now - _lastRedisUpdateTime) >= _stateUpdateInterval;
                     bool shouldRefreshCache = (now - _lastCacheRefresh) >= _cacheRefreshInterval;
                     
                     // Refresh our cache of active sessions only periodically
@@ -97,6 +103,7 @@ namespace AzureOnlinePongGame.Services
                             session.SessionId, session.Player1Id, session.Player2Id);
                             
                         bool stateChanged = false;
+                        bool criticalStateChange = false;
                         
                         // Apply inputs if provided
                         if (leftInput.HasValue)
@@ -124,23 +131,32 @@ namespace AzureOnlinePongGame.Services
                         var oldBallY = session.State.Ball.Y;
                         var oldLeftScore = session.State.LeftScore;
                         var oldRightScore = session.State.RightScore;
+                        var oldGameOver = session.State.GameOver;
                         
                         session.State = GameEngine.UpdateGameState(session.State, DELTA_TIME);
+                        
+                        // Check if score or game state changed - these are critical changes
+                        if (oldLeftScore != session.State.LeftScore || 
+                            oldRightScore != session.State.RightScore || 
+                            oldGameOver != session.State.GameOver)
+                        {
+                            criticalStateChange = true;
+                            _sessionsWithCriticalChanges.Add(session.SessionId);
+                            
+                            // Always update Redis immediately for critical changes
+                            await _gameStateService.UpdateSessionForBothPlayersAsync(session);
+                        }
                         
                         // Check if anything important changed
                         if (oldBallX != session.State.Ball.X || 
                             oldBallY != session.State.Ball.Y ||
-                            oldLeftScore != session.State.LeftScore ||
-                            oldRightScore != session.State.RightScore ||
                             stateChanged)
                         {
                             session.State.NeedsUpdate = true;
                             updatedSessions.Add(session);
                             
                             // If something significant changed, update the client immediately
-                            if (oldLeftScore != session.State.LeftScore || 
-                                oldRightScore != session.State.RightScore ||
-                                session.State.GameOver)
+                            if (criticalStateChange)
                             {
                                 if (!string.IsNullOrEmpty(session.Player1Id))
                                     await _hubContext.Clients.Client(session.Player1Id).SendAsync("GameUpdate", session.State);
@@ -177,17 +193,21 @@ namespace AzureOnlinePongGame.Services
                         _lastStateSyncTime = now;
                     }
                     
-                    // Batch update any changed sessions to Redis
-                    if (updatedSessions.Count > 0)
+                    // Batch update Redis less frequently
+                    if (shouldUpdateRedis && updatedSessions.Count > 0)
                     {
-                        foreach (var session in updatedSessions)
+                        var sessionsToUpdate = updatedSessions
+                            .Where(s => s.State.NeedsUpdate && !_sessionsWithCriticalChanges.Contains(s.SessionId))
+                            .ToList();
+                            
+                        foreach (var session in sessionsToUpdate)
                         {
-                            if (session.State.NeedsUpdate)
-                            {
-                                await _gameStateService.UpdateSessionForBothPlayersAsync(session);
-                                session.State.NeedsUpdate = false;
-                            }
+                            await _gameStateService.UpdateSessionForBothPlayersAsync(session);
+                            session.State.NeedsUpdate = false;
                         }
+                        
+                        _lastRedisUpdateTime = now;
+                        _sessionsWithCriticalChanges.Clear();
                     }
                     
                     // Calculate the optimal interval based on activity

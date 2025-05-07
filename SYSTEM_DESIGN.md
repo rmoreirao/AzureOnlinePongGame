@@ -1,7 +1,7 @@
 # Azure Online Pong Game - System Design
 
 ## Overview
-This document describes the architecture, components, flows, and interactions of the Azure Online Pong Game system. The system leverages Azure Functions, Azure SignalR Service, Redis, and a static frontend to provide real-time multiplayer Pong gameplay.
+This document describes the architecture, components, flows, and interactions of the Azure Online Pong Game system. The system leverages ASP.NET Core, Azure SignalR Service, Redis, and a static frontend to provide real-time multiplayer Pong gameplay.
 
 ---
 
@@ -11,18 +11,19 @@ This document describes the architecture, components, flows, and interactions of
   - HTML/CSS/JS client for gameplay, matchmaking, and UI.
   - Connects to backend via SignalR for real-time updates.
 
-- **Azure Functions Backend:**
-  - Implements SignalR negotiation, matchmaking, game loop, and bot logic.
-  - Exposes HTTP endpoints for negotiation and leaderboard.
+- **ASP.NET Core Backend:**
+  - Implements SignalR Hub, matchmaking, game loop, and bot logic.
+  - Provides HTTP endpoints for health checks.
+  - Maintains in-memory state for active games with periodic Redis persistence.
 
 - **Azure SignalR Service (or Emulator):**
   - Provides real-time messaging between clients and backend.
+  - Supports horizontal scaling with sticky sessions.
 
 - **Redis Cache:**
-  - Stores game sessions and state for fast access and persistence.
-
-- **(Optional) Leaderboard Service:**
-  - Stores and retrieves player scores and rankings.
+  - Stores player-to-session mappings and critical state.
+  - Used for matchmaking queue and session recovery.
+  - Functions as durable storage for critical events.
 
 ---
 
@@ -33,32 +34,61 @@ flowchart TD
     subgraph Frontend
         A[Browser/Client]
     end
-    subgraph Azure_Functions[Azure Functions Backend]
-        B1[Negotiate Function]
+    subgraph ASPNET_Core[ASP.NET Core Backend]
         B2[PongHub - SignalR Hub]
         B3[Matchmaking]
-        B4[Game Loop]
+        B4[GameLoopService]
         B5[Bot Logic]
-        B6[Leaderboard API]
+        B6[Health Checks]
+        IM[In-Memory State]
     end
     subgraph Azure_SignalR[SignalR Service/Emulator]
         S[SignalR]
     end
     subgraph Redis[Redis Cache]
         R[Game State]
+        RQ[Matchmaking Queue]
+        RM[Player Mapping]
     end
-    A -- HTTP Negotiate --> B1
     A -- SignalR --> S
     S -- SignalR --> B2
-    B2 -- Read/Write --> R
+    B2 <--> IM
+    B4 <--> IM
+    B2 -- Only for matchmaking and player lookup --> R
     B2 -- Matchmaking --> B3
-    B3 -- Start Game --> B4
-    B4 -- Update State --> R
-    B4 -- Push State --> S
-    B2 -- Bot Match --> B5
+    B3 --> RQ
+    B4 -- Periodic snapshots --> R
+    B4 -- Direct updates --> B2
+    B2 -- Bot game creation --> B5
     A -- HTTP --> B6
-    B6 -- Read/Write --> R
+    B6 -- Check --> R
+    
+    %% Direct client-to-client paddle updates
+    A -- Direct paddle position --> S -- Opponent paddle --> A
 ```
+
+---
+
+## Memory vs. Redis Usage Strategy
+
+The system uses a hybrid storage approach to minimize Redis dependencies while maintaining scalability:
+
+| Data Type | Storage Strategy | Update Frequency | 
+|-----------|------------------|------------------|
+| Matchmaking Queue | Redis | Real-time |
+| Session Metadata | Redis + Memory | Initial lookup, then cached |
+| Player-Session Mapping | Redis + Memory | Initial lookup, then cached |
+| Paddle Positions | Memory (In-process) | Redis updates throttled to 500ms |
+| Ball Physics | Memory (In-process) | Redis updates throttled to 500ms |
+| Game Scores | Memory + Redis | Critical updates persist immediately |
+| Game Over State | Memory + Redis | Critical updates persist immediately |
+
+This hybrid approach provides:
+- Faster real-time gameplay through in-memory processing
+- Reduced Redis write operations (up to 90% reduction)
+- Reliable state recovery in case of server failures
+- Instant paddle updates via direct SignalR communication
+- Support for horizontal scaling with proper sticky sessions
 
 ---
 
@@ -70,145 +100,164 @@ flowchart TD
 - Receives game state updates and renders them.
 - Initiates matchmaking and bot matches.
 
-### Azure Functions Backend
-- **Negotiate Function:**
-  - Issues SignalR connection info and access tokens.
+### ASP.NET Core Backend
 - **PongHub:**
   - Handles SignalR messages (paddle updates, matchmaking, etc.).
-  - Manages player connections and disconnections.
-- **Matchmaking:**
-  - Pairs players for multiplayer games.
-- **Game Loop:**
-  - Runs the game simulation, updates state, and broadcasts to players.
-- **Bot Logic:**
-  - Simulates AI opponent for solo matches.
-- **Leaderboard API:**
-  - Handles score submissions and leaderboard queries.
+  - Maintains in-memory mapping of players to sessions.
+  - Implements direct client-to-client paddle position updates.
+  - Only writes paddle positions to Redis periodically (500ms intervals).
+- **GameStateService:**
+  - Manages game state in Redis.
+  - Handles player matchmaking.
+  - Stores and retrieves game sessions when needed.
+- **GameLoopService:**
+  - Runs as a BackgroundService.
+  - Maintains active game sessions in memory.
+  - Updates Redis only for critical state changes or periodic snapshots.
+  - Directly pushes game updates to clients via SignalR.
+- **GameEngine:**
+  - Contains the core game logic.
+  - Handles ball movement, collisions, and scoring.
+- **Health Check Endpoints:**
+  - Exposes basic system health information.
 
 ### Azure SignalR Service
 - Relays real-time messages between clients and backend.
+- Supports multiple backend instances with proper routing.
 
 ### Redis Cache
-- Stores active game sessions and state for fast access.
-- Used for matchmaking queues and leaderboard data.
+- Primary function is matchmaking and recovery.
+- Used for initial player-to-session lookups.
+- Stores periodic snapshots of game state.
+- Immediately persists critical state changes.
 
 ---
 
 ## Main Flows
 
 ### 1. Multiplayer Matchmaking Flow
-This flow describes how a player connects, joins the matchmaking queue, gets paired with an opponent, and starts a multiplayer game. The state is managed in Redis, and updates are sent via SignalR.
-
 ```mermaid
 sequenceDiagram
     participant Client
-    participant Negotiate
     participant SignalR
     participant PongHub
-    participant Matchmaking
+    participant GameStateService
     participant Redis
-    Client->>Negotiate: HTTP POST /negotiate
-    Negotiate-->>Client: SignalR connection info
     Client->>SignalR: Connect
     SignalR->>PongHub: OnConnected
     Client->>PongHub: JoinMatchmaking
-    PongHub->>Matchmaking: Add to queue
-    Matchmaking->>Redis: Check for opponent
-    Matchmaking-->>PongHub: Match found
+    PongHub->>GameStateService: AddToMatchmakingAsync
+    GameStateService->>Redis: Store player in queue
+    PongHub->>GameStateService: TryMatchPlayersAsync
+    GameStateService->>Redis: Find opponent
+    GameStateService-->>PongHub: Match found
     PongHub-->>Client: MatchFound
-    PongHub->>Redis: Create session
-    PongHub->>GameLoop: Start game
-    GameLoop->>Redis: Update state
-    GameLoop-->>SignalR: GameUpdate
-    SignalR-->>Client: GameUpdate
-    Client->>PongHub: Paddle updates
+    PongHub->>GameStateService: UpdateSessionForBothPlayersAsync
+    GameStateService->>Redis: Create and store session
+    PongHub->>Memory: Cache session metadata
 ```
 
-### 2. Bot Match Flow
-This flow outlines how a player starts a game against an AI opponent. The backend creates a session and uses the bot logic to control the opponent's paddle.
-
+### 2. Paddle Update Optimization Flow
 ```mermaid
 sequenceDiagram
-    participant Client
-    participant Negotiate
+    participant Client1 as Player 1
     participant SignalR
     participant PongHub
-    participant BotLogic
+    participant Memory
     participant Redis
-    Client->>Negotiate: HTTP POST /negotiate
-    Negotiate-->>Client: SignalR connection info
-    Client->>SignalR: Connect
-    SignalR->>PongHub: OnConnected
-    Client->>PongHub: StartBotMatch
-    PongHub->>BotLogic: Start bot game
-    BotLogic->>Redis: Create session
-    BotLogic->>GameLoop: Start game
-    GameLoop->>Redis: Update state
-    GameLoop-->>SignalR: GameUpdate
-    SignalR-->>Client: GameUpdate
-    Client->>PongHub: Paddle updates
+    participant Client2 as Player 2
+    
+    Client1->>SignalR: SendPaddleInput(y)
+    SignalR->>PongHub: Process input
+    
+    PongHub->>Memory: Update in-memory paddle position
+    
+    alt Direct opponent update (immediate)
+        PongHub->>SignalR: Send to opponent directly
+        SignalR->>Client2: OpponentPaddleInput(y)
+    end
+    
+    alt Throttled Redis update (every 500ms)
+        PongHub->>Redis: Update paddle position
+    end
 ```
 
 ### 3. Game State Update Flow
-This flow shows the core game loop interaction. The backend game loop runs approximately every 33 milliseconds (~30 FPS), reads and writes the game state to Redis, and broadcasts the updated state to connected clients via SignalR.
-
-**Implementation Details:**
-- **Trigger:** The game loop is implemented using a `System.Threading.Timer` within the Azure Function host. A new timer instance is created and started within the `JoinMatchmaking` or `StartBotMatch` function when a game session begins. This timer calls the appropriate game loop logic (`GameLoopRedisWithRetry` or `GameLoopWithBotWithRetry`) periodically for each active game session.
-- **Update Logic:** Inside the loop, the function retrieves the current game state from Redis. It then calculates the new ball position based on its velocity, checks for collisions with paddles and boundaries, updates paddle positions based on recent client inputs (if applicable, though often client-side prediction is used for paddles), updates scores if a point is scored, and checks for game-ending conditions.
-- **Frequency:** The target frequency (e.g., ~30 FPS or every ~33ms) is set by the `period` parameter (`GAME_LOOP_INTERVAL_MS`) when creating the `System.Threading.Timer`.
-- **State Persistence:** After calculations, the updated game state is written back to Redis using `UpdateSessionForBothPlayersAsync`.
-- **Broadcasting:** Finally, the new state is broadcast to all clients connected to that specific game session via the SignalR Service using `SendSignalRMessageWithRetry`.
 
 ```mermaid
 sequenceDiagram
-    participant Timer/Trigger
-    participant GameLoopFunction
+    participant GameLoopService
+    participant Memory
     participant Redis
     participant SignalR
     participant Client
-    Timer/Trigger->>GameLoopFunction: Invoke periodically
-    GameLoopFunction->>Redis: Read current state
-    GameLoopFunction->>GameLoopFunction: Calculate new state (ball, collisions, score)
-    GameLoopFunction->>Redis: Write updated state
-    GameLoopFunction-->>SignalR: GameUpdate (broadcast to game group)
-    SignalR-->>Client: GameUpdate
+    
+    loop Every 33ms (game loop tick)
+        GameLoopService->>Memory: Read session from memory
+        GameLoopService->>GameLoopService: Update game physics
+        
+        alt Critical state change (score, game over)
+            GameLoopService->>Redis: Persist immediately
+            GameLoopService->>SignalR: Send immediate update
+            SignalR->>Client: GameUpdate (critical)
+        else Normal update
+            GameLoopService->>Memory: Update in-memory state
+        end
+        
+        alt Every 100ms
+            GameLoopService->>SignalR: Send position update
+            SignalR->>Client: GameUpdate (positions)
+        end
+        
+        alt Every 500ms
+            GameLoopService->>Redis: Persist periodic snapshot
+        end
+    end
 ```
 
-### 4. Leaderboard Flow
-This flow describes how clients interact with the leaderboard API (an Azure Function) to submit scores or retrieve the current rankings, which are stored in Redis.
+---
 
-```mermaid
-sequenceDiagram
-    participant Client
-    participant LeaderboardAPI
-    participant Redis
-    Client->>LeaderboardAPI: HTTP GET/POST
-    LeaderboardAPI->>Redis: Read/Write scores
-    LeaderboardAPI-->>Client: Leaderboard data
-```
+## Horizontal Scaling Considerations
+
+The system is designed to support horizontal scaling with these considerations:
+
+1. **Sticky Sessions Requirement**:
+   - SignalR clients need sticky sessions to maintain connection to the same backend
+   - Load balancer should support affinity based on connection ID
+
+2. **Redis as Coordination Layer**:
+   - Matchmaking still relies on Redis for cross-instance player matching
+   - Session metadata is in Redis for initial connections and recovery
+
+3. **Memory Usage Optimization**:
+   - Each server instance only loads the game sessions it's actively handling
+   - Memory footprint scales linearly with active connections per instance
+
+4. **Failover Handling**:
+   - Periodic state snapshots to Redis enable recovery after instance failure
+   - Critical game events (scoring, game completion) are immediately persisted
+
+5. **Scaling Guidance**:
+   - Configure Azure SignalR Service with multiple units as needed
+   - Scale backend instances based on active connection count
+   - Redis should be sized based on total concurrent game count, not traffic volume
 
 ---
 
 ## Error Handling & Resilience
-- SignalR connection loss is detected and surfaced to the user via UI toasts.
-- Game state is persisted in Redis to allow recovery from transient failures.
+- SignalR connection loss is detected and surfaced to the user via UI notifications.
+- Periodic game state snapshots in Redis allow for recovery from transient failures.
 - Automatic reconnection is enabled for SignalR clients.
+- Connection state tracking helps manage player disconnect/reconnect scenarios.
 
 ---
 
 ## Security Considerations
-- SignalR access tokens are issued per connection.
 - All sensitive operations are performed server-side.
 - Redis is not exposed publicly.
-
----
-
-## Extensibility
-- Add chat, spectator mode, or rematch flows by extending SignalR and backend logic.
-- Swap Redis for another persistent store if needed.
-- Deploy to Azure Static Web Apps, Azure Functions, and Azure SignalR for production.
+- CORS policies limit which origins can connect to the backend.
 
 ---
 
 ## Summary
-This system design enables real-time, scalable, and resilient Pong gameplay using Azure serverless technologies and best practices.
+This system design enables real-time, scalable, and resilient Pong gameplay using ASP.NET Core, SignalR, and Redis, with optimizations to reduce Redis dependencies for better performance and cost-efficiency.

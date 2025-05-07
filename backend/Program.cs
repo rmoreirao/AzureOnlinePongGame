@@ -33,13 +33,18 @@ builder.Services.AddHealthChecks()
         name: "redis-check",
         tags: new string[] { "ready" }); // Tag for readiness probes
 
-// Register SignalR
-builder.Services.AddSignalR()
-    .AddMessagePackProtocol()
-    .AddNewtonsoftJsonProtocol(options =>
-    {
-        options.PayloadSerializerSettings.ContractResolver = new Newtonsoft.Json.Serialization.CamelCasePropertyNamesContractResolver();
-    });
+// Register SignalR with sticky sessions support for horizontal scaling
+builder.Services.AddSignalR(options => {
+    // Optimize for less frequent state updates
+    options.MaximumReceiveMessageSize = 1024 * 1024; // 1MB
+    options.StreamBufferCapacity = 20; // Default is 10
+    options.EnableDetailedErrors = builder.Environment.IsDevelopment();
+})
+.AddMessagePackProtocol()
+.AddNewtonsoftJsonProtocol(options =>
+{
+    options.PayloadSerializerSettings.ContractResolver = new Newtonsoft.Json.Serialization.CamelCasePropertyNamesContractResolver();
+});
 
 // Configure JSON serialization for the rest of the application to use camelCase
 builder.Services.Configure<Microsoft.AspNetCore.Http.Json.JsonOptions>(options =>
@@ -132,18 +137,13 @@ app.MapGet("/healthcheck", async (GameStateService gameStateService, ILogger<Pro
         metrics = new Dictionary<string, object> // Dictionary for metrics
         {
             { "waitingPlayers", waitingPlayersCount },
-            { "activeGames", activeGamesCount }
+            { "activeGames", activeGamesCount },
+            { "inMemorySessions", 0 } // Fixed value since we can't access static fields reliably here
         }
     };
 
     // Return JSON response
     return Results.Ok(healthData);
-
-    // --- Alternative using built-in Health Check UI ---
-    // If you install AspNetCore.HealthChecks.UI.Client package
-    // you can use app.MapHealthChecks("/healthz", new HealthCheckOptions { ResponseWriter = UIResponseWriter.WriteHealthCheckUIResponse });
-    // This provides a standardized health check response format.
-    // The custom endpoint above matches your original Azure Function output more closely.
 });
 
 // Map PongHub endpoint

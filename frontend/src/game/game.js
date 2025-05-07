@@ -207,15 +207,38 @@ function drawDebugOverlay() {
     
     // Highlight paddle collision areas
     const leftPaddleX = 16;
-    const rightPaddleX = CANVAS_WIDTH - 32 - PADDLE_WIDTH;
+    const rightPaddleX = CANVAS_WIDTH - 32;
+    
+    // Visualize the server-side collision buffer (4 pixels)
+    const COLLISION_BUFFER = 4;
     
     // Player's paddle collision area
     if (playerSide === 1) {
+        // Normal paddle
         dctx.strokeStyle = 'rgba(0, 255, 0, 0.8)';
-        dctx.strokeRect(leftPaddleX, playerY - 2, PADDLE_WIDTH, PADDLE_HEIGHT + 4);
+        dctx.strokeRect(leftPaddleX, playerY, PADDLE_WIDTH, PADDLE_HEIGHT);
+        
+        // Extended hitbox - shows what the server is actually checking against
+        dctx.strokeStyle = 'rgba(255, 255, 0, 0.5)';
+        dctx.strokeRect(
+            leftPaddleX - COLLISION_BUFFER/2, 
+            playerY - COLLISION_BUFFER, 
+            PADDLE_WIDTH + COLLISION_BUFFER, 
+            PADDLE_HEIGHT + COLLISION_BUFFER * 2
+        );
     } else {
+        // Normal paddle
         dctx.strokeStyle = 'rgba(0, 255, 0, 0.8)';
-        dctx.strokeRect(rightPaddleX, playerY - 2, PADDLE_WIDTH, PADDLE_HEIGHT + 4);
+        dctx.strokeRect(rightPaddleX, playerY, PADDLE_WIDTH, PADDLE_HEIGHT);
+        
+        // Extended hitbox - shows what the server is actually checking against
+        dctx.strokeStyle = 'rgba(255, 255, 0, 0.5)';
+        dctx.strokeRect(
+            rightPaddleX - BALL_SIZE - COLLISION_BUFFER/2, 
+            playerY - COLLISION_BUFFER, 
+            PADDLE_WIDTH + COLLISION_BUFFER, 
+            PADDLE_HEIGHT + COLLISION_BUFFER * 2
+        );
     }
     
     // Draw last collision check
