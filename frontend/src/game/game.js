@@ -8,6 +8,7 @@ const PADDLE_HEIGHT = 100;
 const BALL_SIZE = 16;
 const PADDLE_SPEED = 6;
 const BALL_SPEED = 6;
+const BOT_PADDLE_SPEED_FACTOR = 0.85; // Match server-side value from GameEngine.cs
 
 // Game state variables
 let playerY = (CANVAS_HEIGHT - PADDLE_HEIGHT) / 2;
@@ -36,6 +37,10 @@ let lastFrameTime = 0;
 let fpsCounter = 0;
 let frameCount = 0;
 const FPS_UPDATE_INTERVAL = 500; // Update FPS counter every 500ms
+
+// Server-reported paddle positions for comparison
+let serverLeftPaddleY = null;
+let serverRightPaddleY = null;
 
 // Debug history tracking
 let paddleHistory = [];
@@ -263,10 +268,11 @@ function recordPositionHistory() {
         vy: ballVY
     });
     
-    // Record paddle position
+    // Record paddle positions (both player and opponent)
     paddleHistory.push({
         time: now,
-        y: playerY,
+        playerY: playerY,
+        opponentY: opponentY,
         side: playerSide
     });
     
@@ -344,9 +350,9 @@ function updateSinglePlayer() {
     const ballCenter = ballY + BALL_SIZE / 2;
     
     if (paddleCenter < ballCenter - 10) {
-        opponentY += PADDLE_SPEED * 0.7; // Slightly slower than player
+        opponentY += PADDLE_SPEED * BOT_PADDLE_SPEED_FACTOR; // Using the server-synchronized factor
     } else if (paddleCenter > ballCenter + 10) {
-        opponentY -= PADDLE_SPEED * 0.7;
+        opponentY -= PADDLE_SPEED * BOT_PADDLE_SPEED_FACTOR;
     }
     opponentY = Math.max(0, Math.min(CANVAS_HEIGHT - PADDLE_HEIGHT, opponentY));
     
@@ -597,12 +603,18 @@ function renderServerState(state) {
     if (playerSide === 1) {
         // We're on the left
         opponentY = state.rightPaddle?.y ?? opponentY;
+        // Store server paddle positions for comparison
+        serverLeftPaddleY = state.leftPaddle?.y ?? null;  
+        serverRightPaddleY = state.rightPaddle?.y ?? null;
         // Only update ball from server - don't instantly snap
         ballX = serverBallX;
         ballY = serverBallY;
     } else {
         // We're on the right
         opponentY = state.leftPaddle?.y ?? opponentY;
+        // Store server paddle positions for comparison
+        serverLeftPaddleY = state.leftPaddle?.y ?? null;
+        serverRightPaddleY = state.rightPaddle?.y ?? null;
         // Only update ball from server - don't instantly snap
         ballX = serverBallX;
         ballY = serverBallY;
@@ -775,7 +787,9 @@ export function startLocalGame() {
     
     // Show instructions
     const instructions = document.getElementById('game-instructions');
-    if (instructions) instructions.style.display = 'block';
+    if (instructions) {
+        instructions.style.display = 'block';
+    }
     
     // Check if debug mode is enabled
     const debugCheckbox = document.getElementById('toggle-debug');
