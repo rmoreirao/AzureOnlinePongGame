@@ -2,26 +2,137 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Azure Multiplayer Pong</title>
+    <meta name="viewport" content="width=800, initial-scale=1.0">
+    <title>Azure Online Pong Game</title>
     <link rel="stylesheet" href="../public/style.css">
+    <style>
+        /* Add instructions display */
+        #game-instructions {
+            position: absolute;
+            top: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 8px 16px;
+            border-radius: 4px;
+            font-size: 14px;
+            pointer-events: none;
+            display: none;
+        }
+        
+        /* Add debug info panel */
+        #debug-panel {
+            position: absolute;
+            bottom: 10px;
+            right: 10px;
+            background: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-family: monospace;
+            display: none;
+        }
+
+        /* Visual debug canvas */
+        #debug-canvas {
+            position: absolute;
+            top: 60px;
+            left: 50%;
+            transform: translateX(-50%);
+            pointer-events: none;
+            display: none;
+        }
+    </style>
 </head>
 <body>
     <div id="app">
-        <h1>Azure Multiplayer Pong</h1>
-        <canvas id="pong-canvas" width="800" height="600"></canvas>
-        <div id="ui">
-            <button id="play-vs-local">Player vs Local</button>
-            <button id="play-vs-ai">Play vs AI</button>
-            <button id="play-vs-player">Play Online</button>
-            <button id="play-vs-bot">Play vs Bot</button>
-            <button id="leaderboard">Leaderboard</button>
-            <button id="login">Login</button>
-            <button id="logout" style="display:none;">Logout</button>
+        <h1>Azure Online Pong Game</h1>
+        
+        <!-- Game canvas container with relative positioning -->
+        <div id="game-container" style="position: relative; margin: 0 auto; width: 800px; height: 600px;">
+            <!-- Main game canvas -->
+            <canvas id="pong-canvas" width="800" height="600"></canvas>
+            
+            <!-- Debug overlay canvas (for visualization) -->
+            <canvas id="debug-canvas" width="800" height="600" style="position: absolute; top: 0; left: 0; pointer-events: none; display: none;"></canvas>
+            
+            <!-- Game instructions overlay -->
+            <div id="game-instructions" style="display: none;">
+                Use arrow keys or W/S to move paddle
+            </div>
         </div>
-        <div id="connection-status" style="display:none;"></div>
-        <div id="chat" style="display:none;"></div>
+        
+        <!-- UI Controls -->
+        <div id="ui">
+            <button id="play-vs-local">Play Local</button>
+            <button id="play-vs-player">Play vs Player</button>
+            <button id="play-vs-bot">Play vs Bot</button>
+            <label>
+                <input type="checkbox" id="toggle-debug"> Debug Mode
+            </label>
+        </div>
+        
+        <div id="connection-status" style="display: none;"></div>
+        
+        <!-- Chat area for multiplayer (optional) -->
+        <div id="chat" style="display: none;">
+            <div id="messages"></div>
+            <input type="text" id="message-input" placeholder="Type a message...">
+            <button id="send-message">Send</button>
+        </div>
+        
+        <!-- Debug Panel (hidden by default) -->
+        <div id="debug-panel">
+            <h3>Game Debug</h3>
+            
+            <div class="position-data">
+                <div>
+                    <span>Ball Position:</span>
+                    <span id="ball-position">0,0</span>
+                </div>
+                <div>
+                    <span>Ball Velocity:</span>
+                    <span id="ball-velocity">0,0</span>
+                </div>
+                <div>
+                    <span>Paddle Position:</span>
+                    <span id="paddle-position">0</span>
+                </div>
+                <div>
+                    <span>Last Collision:</span>
+                    <span id="collision-check">None</span>
+                </div>
+            </div>
+            
+            <h3>Performance</h3>
+            <div class="position-data">
+                <div>
+                    <span>FPS:</span>
+                    <span id="fps-counter">0</span>
+                </div>
+                <div>
+                    <span>Ping:</span>
+                    <span id="ping-counter">0</span>ms
+                </div>
+                <div>
+                    <span>State Corrections:</span>
+                    <span id="correction-counter">0</span>
+                </div>
+            </div>
+            
+            <h3>Goal History</h3>
+            <div class="history-section">
+                <div id="goal-history">
+                    <!-- Goal entries will be inserted here -->
+                    <div class="goal-entry">No goals yet</div>
+                </div>
+                <button id="download-debug">Download Debug Data</button>
+            </div>
+        </div>
     </div>
+    
     <!-- SignalR and MessagePack libraries -->
     <script src="https://cdn.jsdelivr.net/npm/@microsoft/signalr@7.0.12/dist/browser/signalr.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@microsoft/signalr-protocol-msgpack@7.0.12/dist/browser/signalr-protocol-msgpack.min.js"></script>

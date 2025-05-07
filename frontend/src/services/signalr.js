@@ -1,13 +1,12 @@
 // Multiplayer SignalR connection logic
 // Uses global signalR object from CDN
 
+import { enableMultiplayer, renderMultiplayerState, handleOpponentInput } from '../game/game.js';
+
 let connection = null;
 let lastReconnectAttempt = 0;
 let reconnectAttempts = 0;
 let keepAliveInterval = null;
-
-// Track the last sent paddle position
-let lastSentPaddleY = null;
 
 // Connection state enum for clarity
 export const SignalRConnectionState = {
@@ -32,15 +31,25 @@ export async function connectSignalR(onGameUpdate, onMatchFound, onConnectionSta
 
     window.signalRConnection = connection;
 
-    // Add debug logging for incoming messages
+    // Game state update from server
     connection.on("GameUpdate", (gameState) => {
-        console.debug("Received game update", gameState);
-        onGameUpdate(gameState);
+        renderMultiplayerState(gameState);
+        if (onGameUpdate) onGameUpdate(gameState);
+    });
+
+    // Opponent input from server
+    connection.on("OpponentPaddleInput", (targetY) => {
+        handleOpponentInput(targetY);
     });
 
     connection.on("MatchFound", (matchInfo) => {
-        console.log("Match found event received", matchInfo);
-        onMatchFound(matchInfo);
+        // matchInfo.side: 1 or 2
+        enableMultiplayer(matchInfo.side, sendPaddleInput);
+        // Signal readiness to backend
+        if (connection && typeof connection.invoke === 'function') {
+            connection.invoke("RequestStartGame");
+        }
+        if (onMatchFound) onMatchFound(matchInfo);
     });
 
     connection.on("WaitingForOpponent", () => {
@@ -58,11 +67,16 @@ export async function connectSignalR(onGameUpdate, onMatchFound, onConnectionSta
 
     connection.on("GameOver", (gameState) => {
         console.log("Game over", gameState);
-        onGameUpdate(gameState); // Update the final game state
+        if (onGameUpdate) onGameUpdate(gameState); // Update the final game state
     });
 
     connection.on("Pong", (timestamp) => {
         console.debug("Received pong from server", new Date(timestamp));
+    });
+
+    connection.on("GameStarted", () => {
+        // Optionally, you can show a toast or UI indicator that the game is starting
+        console.log("Game started! Both players are ready.");
     });
 
     // Connection state handlers
@@ -126,22 +140,15 @@ function isConnected() {
     return connection && connection.state === signalR.HubConnectionState.Connected;
 }
 
-export function sendPaddleUpdate(paddleY) {
+// Use new SendPaddleInput method
+export function sendPaddleInput(targetY) {
     if (isConnected()) {
         try {
-            // Only send updates if position changed or enough time has passed since last update
-            const positionChanged = lastSentPaddleY === null || Math.abs(paddleY - lastSentPaddleY) > 0.01;
-            const timeThresholdMet = !window.lastPaddleUpdate || Date.now() - window.lastPaddleUpdate > 50;
-            
-            if (positionChanged && timeThresholdMet) {
-                connection.invoke("UpdatePaddle", paddleY).catch(err => {
-                    console.warn("Error sending paddle update:", err);
-                });
-                window.lastPaddleUpdate = Date.now();
-                lastSentPaddleY = paddleY;
-            }
+            connection.invoke("SendPaddleInput", targetY).catch(err => {
+                console.warn("Error sending paddle input:", err);
+            });
         } catch (err) {
-            console.error("Error sending paddle update:", err);
+            console.error("Error sending paddle input:", err);
         }
     }
 }

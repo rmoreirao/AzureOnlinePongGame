@@ -1,5 +1,6 @@
 # Ignore local Azure Functions settings
-api/local.settings.json
+api/
+api-old-to-ignore/
 # Node modules and build output
 node_modules/
 dist/
@@ -12,7 +13,6 @@ Thumbs.db
 # VS Code settings
 .vscode/
 settings.json
-
 
 # Local settings
 appsettings.*.json

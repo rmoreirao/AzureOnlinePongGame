@@ -42,19 +42,19 @@ Follow the Redis installation guide for your platform:
 sudo service redis-server start
 ```
 
-### Azure Functions Setup
+### Backend API
 
 1. Create your configuration file:
    ```
-   cp api/sample.local.settings.json api/local.settings.json
+   appsettings.Development.json
    ```
 
-2. Update the SignalR connection string in `api/local.settings.json` with the one from the emulator
+2. Update the SignalR connection string in `backend/appsettings.Development.json` with the one from the emulator
 
 3. Start the Functions host:
    ```bash
-   cd api
-   func start --verbose
+   cd backend
+   dotnet run
    ```
 
 ### Running the Frontend

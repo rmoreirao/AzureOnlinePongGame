@@ -1,0 +1,25 @@
+version: '3.8'
+services:
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
+  signalr:
+    build: ./signalr-emulator
+    ports:
+      - "8888:8888"
+    restart: unless-stopped
+
+  backend:
+    build: ./backend
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ConnectionStrings__RedisConnection=redis:6379
+      - ConnectionStrings__AzureSignalR=Endpoint=http://signalr;Port=8888;AccessKey=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789ABCDEFGH;Version=1.0;
+    ports:
+      - "7071:7071"
+    depends_on:
+      - redis
+      - signalr

@@ -21,6 +21,9 @@ builder.Services.AddOpenApi();
 // 1. Register GameStateService as a Singleton
 builder.Services.AddSingleton<GameStateService>();
 
+// Add memory cache service
+builder.Services.AddMemoryCache();
+
 // 2. Configure Health Checks
 builder.Services.AddHealthChecks()
     // Add Redis health check
@@ -51,6 +54,28 @@ builder.Services.AddHostedService<AzureOnlinePongGame.Services.GameLoopService>(
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
+// Read CORS origins from configuration
+var corsOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>();
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("FrontendCors", policy =>
+    {
+        if (corsOrigins != null && corsOrigins.Length > 0)
+        {
+            policy.WithOrigins(corsOrigins)
+                  .AllowAnyHeader()
+                  .AllowAnyMethod()
+                  .AllowCredentials();
+        }
+        else
+        {
+            policy.AllowAnyOrigin()
+                  .AllowAnyHeader()
+                  .AllowAnyMethod();
+        }
+    });
+});
+
 // *** End Migration Additions ***
 
 
@@ -65,6 +90,9 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseHttpsRedirection();
+
+// Apply CORS policy globally
+app.UseCors("FrontendCors");
 
 // *** Start Migration Additions ***
 

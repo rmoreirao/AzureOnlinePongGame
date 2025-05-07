@@ -27,6 +27,34 @@ namespace AzureOnlinePongGame.Models
         [Key("winner")]
         [JsonProperty("winner")]
         public int Winner { get; set; } = 0; // 0=no winner, 1=left, 2=right
+        [Key("leftPaddleTargetY")]
+        [JsonProperty("leftPaddleTargetY")]
+        public float LeftPaddleTargetY { get; set; } = 250;
+        [Key("rightPaddleTargetY")]
+        [JsonProperty("rightPaddleTargetY")]
+        public float RightPaddleTargetY { get; set; } = 250;
+        [Key("sequenceNumber")]
+        [JsonProperty("sequenceNumber")]
+        public int SequenceNumber { get; set; } = 0;
+        [Key("leftPlayerReady")]
+        [JsonProperty("leftPlayerReady")]
+        public bool LeftPlayerReady { get; set; } = false;
+        [Key("rightPlayerReady")]
+        [JsonProperty("rightPlayerReady")]
+        public bool RightPlayerReady { get; set; } = false;
+        [MessagePack.IgnoreMember]
+        [JsonIgnore]
+        public bool PlayersReady => LeftPlayerReady && RightPlayerReady;
+        
+        // Add a field to track whether state has changed and needs to be saved to Redis
+        [MessagePack.IgnoreMember]
+        [JsonIgnore]
+        public bool NeedsUpdate { get; set; } = true;
+        
+        // Add last update time to optimize how often we sync with clients
+        [MessagePack.IgnoreMember]
+        [JsonIgnore]
+        public DateTime LastClientSyncTime { get; set; } = DateTime.MinValue;
     }
 
     [MessagePackObject]

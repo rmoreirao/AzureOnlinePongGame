@@ -13,5 +13,8 @@ namespace AzureOnlinePongGame.Models
         public GameState State { get; set; } = new GameState();
         [JsonProperty("lastUpdateTime")]
         public DateTime LastUpdateTime { get; set; } = DateTime.UtcNow;
+
+        [JsonIgnore]
+        public string SessionId => $"{Player1Id}:{Player2Id}";
     }
 }
