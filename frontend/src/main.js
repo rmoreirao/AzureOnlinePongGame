@@ -1,5 +1,6 @@
 // Main entry point for the application
 import { initGame, startLocalGame, enableMultiplayer, renderMultiplayerState, handleOpponentInput, updatePing } from './game/game.js';
+import { SIGNALR_HUB_URL } from './config.js';
 
 document.addEventListener('DOMContentLoaded', () => {
     // Initialize game canvas and controls
@@ -49,11 +50,9 @@ document.addEventListener('DOMContentLoaded', () => {
             connectionStatus.textContent = 'Connecting to server...';
             
             try {
-                // Create SignalR connection
-                const serverUrl = '/api'; // for Azure Functions
-                
+                // Create SignalR connection using config URL
                 connection = new signalR.HubConnectionBuilder()
-                    .withUrl(`${serverUrl}/pong`)
+                    .withUrl(SIGNALR_HUB_URL)
                     .configureLogging(signalR.LogLevel.Information)
                     .build();
                 
@@ -72,7 +71,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 setupGameEvents(connection);
                 
                 // Join multiplayer queue
-                connection.invoke('JoinQueue');
+                connection.invoke('JoinMatchmaking');
                 
             } catch (err) {
                 console.error('Connection failed: ', err);
@@ -82,7 +81,7 @@ document.addEventListener('DOMContentLoaded', () => {
         } else if (connection.state === 'Connected') {
             // Already connected, just join queue
             connectionStatus.textContent = 'Connected, waiting for opponent...';
-            connection.invoke('JoinQueue');
+            connection.invoke('JoinMatchmaking');
         }
     });
     
@@ -92,11 +91,9 @@ document.addEventListener('DOMContentLoaded', () => {
             connectionStatus.textContent = 'Connecting to server...';
             
             try {
-                // Create SignalR connection
-                const serverUrl = '/api'; // for Azure Functions
-                
+                // Create SignalR connection using config URL
                 connection = new signalR.HubConnectionBuilder()
-                    .withUrl(`${serverUrl}/pong`)
+                    .withUrl(SIGNALR_HUB_URL)
                     .configureLogging(signalR.LogLevel.Information)
                     .build();
                 
@@ -115,7 +112,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 setupGameEvents(connection);
                 
                 // Join bot game
-                connection.invoke('PlayAgainstBot');
+                connection.invoke('StartBotMatch');
                 
             } catch (err) {
                 console.error('Connection failed: ', err);
@@ -125,13 +122,12 @@ document.addEventListener('DOMContentLoaded', () => {
         } else if (connection.state === 'Connected') {
             // Already connected, just start bot game
             connectionStatus.textContent = 'Connected, starting bot game...';
-            connection.invoke('PlayAgainstBot');
+            connection.invoke('StartBotMatch');
         }
     });
     
     // Setup game events with SignalR connection
     function setupGameEvents(connection) {
-        
         // Track ping times
         let pingInterval;
         let pingStartTime;
@@ -139,7 +135,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // Start tracking ping on connect
         pingInterval = setInterval(() => {
             pingStartTime = Date.now();
-            connection.invoke('Ping');
+            connection.invoke('KeepAlive');
         }, 2000); // Check ping every 2 seconds
         
         // Handle receiving pong response for ping
@@ -149,41 +145,44 @@ document.addEventListener('DOMContentLoaded', () => {
         });
         
         // Game events
-        connection.on('GameStart', (playerNum) => {
-            connectionStatus.textContent = `Game started! You are Player ${playerNum}`;
+        connection.on('MatchFound', (data) => {
+            connectionStatus.textContent = `Game found! You are Player ${data.side}`;
             
             // 1 = left, 2 = right
-            const side = playerNum === 1 ? 1 : 2;
+            const side = data.side;
             
             // Send paddle updates function we'll pass to the game engine
             const sendPaddleUpdate = (y) => {
-                connection.invoke('UpdatePaddle', y);
+                connection.invoke('SendPaddleInput', y);
             };
             
             // Start multiplayer mode
             enableMultiplayer(side, sendPaddleUpdate);
+            
+            // Signal ready to start
+            connection.invoke('RequestStartGame');
         });
         
-        connection.on('OpponentPaddle', (y) => {
+        connection.on('OpponentPaddleInput', (y) => {
             handleOpponentInput(y);
         });
         
-        connection.on('GameState', (state) => {
+        connection.on('GameUpdate', (state) => {
             renderMultiplayerState(state);
-            
-            // Debug: track the last collision info from server
-            const debugCollisionElement = document.getElementById('collision-check');
-            if (debugCollisionElement && state.lastCollision) {
-                const collisionResult = state.lastCollision.result ? 'HIT' : 'MISS';
-                debugCollisionElement.textContent = `Server: ${collisionResult} at ${state.lastCollision.ballX},${state.lastCollision.ballY}`;
-            }
         });
         
-        connection.on('GameOver', (winner) => {
-            connectionStatus.textContent = `Game Over! ${winner === 1 ? 'Left' : 'Right'} player wins`;
-            
-            // Clean up ping interval
+        connection.on('OpponentDisconnected', (state) => {
+            connectionStatus.textContent = `Opponent disconnected! Game Over.`;
+            renderMultiplayerState(state);
             clearInterval(pingInterval);
+        });
+        
+        connection.on('WaitingForOpponent', () => {
+            connectionStatus.textContent = 'Waiting for an opponent...';
+        });
+        
+        connection.on('AlreadyInGame', () => {
+            connectionStatus.textContent = 'Already in an active game!';
         });
     }
 });

@@ -19,7 +19,7 @@ services:
       - ConnectionStrings__RedisConnection=redis:6379
       - ConnectionStrings__AzureSignalR=Endpoint=http://signalr;Port=8888;AccessKey=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789ABCDEFGH;Version=1.0;
     ports:
-      - "7071:7071"
+      - "6001:6001"
     depends_on:
       - redis
       - signalr

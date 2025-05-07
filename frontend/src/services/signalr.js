@@ -2,6 +2,7 @@
 // Uses global signalR object from CDN
 
 import { enableMultiplayer, renderMultiplayerState, handleOpponentInput } from '../game/game.js';
+import { SIGNALR_HUB_URL } from '../config.js';
 
 let connection = null;
 let lastReconnectAttempt = 0;
@@ -17,13 +18,8 @@ export const SignalRConnectionState = {
 };
 
 export async function connectSignalR(onGameUpdate, onMatchFound, onConnectionStateChange, onConnectionError, onWaitingForOpponent) {
-    const backendUrl = "https://localhost:6001/pong"; // Updated to use HTTPS
-
     connection = new signalR.HubConnectionBuilder()
-        .withUrl(backendUrl, {
-            transport: signalR.HttpTransportType.WebSockets,
-            skipNegotiation: true
-        })
+        .withUrl(SIGNALR_HUB_URL)
         .configureLogging(signalR.LogLevel.Information)
         .withAutomaticReconnect()
         .withHubProtocol(new signalR.protocols.msgpack.MessagePackHubProtocol())
