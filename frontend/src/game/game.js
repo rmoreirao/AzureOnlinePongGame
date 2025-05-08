@@ -29,6 +29,13 @@ let playerSide = 1; // 1 = left, 2 = right
 let sendPaddleUpdate = null;
 let isGameActive = false;
 
+// Server authoritative state for interpolation
+let serverAuthoritativeBallX = (CANVAS_WIDTH - BALL_SIZE) / 2;
+let serverAuthoritativeBallY = (CANVAS_HEIGHT - BALL_SIZE) / 2;
+let serverAuthoritativeBallVX = BALL_SPEED; // Initial assumption, will be updated by server
+let serverAuthoritativeBallVY = BALL_SPEED; // Initial assumption, will be updated by server
+let newServerUpdateProcessed = true; // Tracks if the latest server velocities have been applied
+
 // Debug variables
 let lastServerUpdate = Date.now();
 let correctionCount = 0;
@@ -266,7 +273,7 @@ function drawDebugOverlay() {
 function recordPositionHistory() {
     const now = Date.now();
     
-    // Record ball position
+    // Record ball position (client's visual position)
     ballHistory.push({
         time: now,
         x: ballX,
@@ -529,28 +536,6 @@ function updateMultiplayer() {
         sendPaddleUpdate(playerY);
         lastPaddleUpdateTime = now;
     }
-    
-    // Check for near-misses (for debugging)
-    checkNearMisses();
-}
-
-// Simple local prediction of ball movement
-function predictBallMovement(deltaTime) {
-    // Only predict if we haven't received an update in a while
-    const now = Date.now();
-    const msSinceUpdate = now - lastServerUpdate;
-    
-    // If it's been more than 100ms since a server update, do simple prediction
-    if (msSinceUpdate > 100 && !gameOver) {
-        ballX += ballVX * deltaTime;
-        ballY += ballVY * deltaTime;
-        
-        // Simple wall collision for prediction
-        if (ballY <= 0 || ballY + BALL_SIZE >= CANVAS_HEIGHT) {
-            ballVY = -ballVY;
-            ballY = Math.max(0, Math.min(CANVAS_HEIGHT - BALL_SIZE, ballY));
-        }
-    }
 }
 
 // Game loop for single player
@@ -569,11 +554,42 @@ function gameLoop(ctx) {
 function gameLoopMultiplayer(ctx) {
     if (!isGameActive) return;
     
-    updateMultiplayer();
+    updateMultiplayer(); // Handles local player paddle movement and sending updates
     
-    // Simple prediction for smooth visual updates between server messages
-    const deltaTime = 1/60; // Assume 60fps for prediction
-    predictBallMovement(deltaTime);
+    // Client-side prediction for the ball
+    // Assuming 60fps, clientDeltaTime is approx 1/60.
+    // Server multiplies velocity by deltaTime * 60, so we do the same here.
+    const clientPredictionDelta = 1 / 60; 
+    ballX += ballVX * clientPredictionDelta * 60;
+    ballY += ballVY * clientPredictionDelta * 60;
+
+    // Client-side wall collision prediction
+    if (ballY <= 0 || ballY + BALL_SIZE >= CANVAS_HEIGHT) {
+        ballVY = -ballVY;
+        ballY = Math.max(0, Math.min(CANVAS_HEIGHT - BALL_SIZE, ballY)); // Clamp to bounds
+    }
+    // Note: Client-side prediction of paddle collisions is complex and usually omitted
+    // to rely on the server's authoritative collision detection.
+
+    // Server Reconciliation: Interpolate visual ball towards server's authoritative position
+    const interpolationFactor = 0.15; // Adjust for smoothness (0.1 - 0.3 typically)
+    ballX += (serverAuthoritativeBallX - ballX) * interpolationFactor;
+    ballY += (serverAuthoritativeBallY - ballY) * interpolationFactor;
+
+    // If a new server update has provided fresh velocities, adopt them.
+    if (!newServerUpdateProcessed) {
+        ballVX = serverAuthoritativeBallVX;
+        ballVY = serverAuthoritativeBallVY;
+        newServerUpdateProcessed = true; // Mark that these new velocities are now in use by client prediction
+    }
+
+    // Snap to authoritative position if very close, to prevent micro-oscillations
+    if (Math.abs(serverAuthoritativeBallX - ballX) < 0.5) {
+        ballX = serverAuthoritativeBallX;
+    }
+    if (Math.abs(serverAuthoritativeBallY - ballY) < 0.5) {
+        ballY = serverAuthoritativeBallY;
+    }
     
     draw(ctx);
     
@@ -589,18 +605,21 @@ function renderServerState(state) {
     // Record timing for debug info
     lastServerUpdate = Date.now();
     
-    // Extract position data from server state
-    const serverBallX = state.ball?.x ?? ballX;
-    const serverBallY = state.ball?.y ?? ballY;
-    
-    // Calculate how much our prediction deviated
+    // Update authoritative state from server
+    serverAuthoritativeBallX = state.ball?.x ?? serverAuthoritativeBallX;
+    serverAuthoritativeBallY = state.ball?.y ?? serverAuthoritativeBallY;
+    serverAuthoritativeBallVX = state.ball?.velocityX ?? serverAuthoritativeBallVX;
+    serverAuthoritativeBallVY = state.ball?.velocityY ?? serverAuthoritativeBallVY;
+    newServerUpdateProcessed = false; // Flag that new server velocities are available for the client to adopt
+
+    // Calculate how much our prediction deviated (for debugging)
     const ballDeviation = Math.sqrt(
-        Math.pow(serverBallX - ballX, 2) + 
-        Math.pow(serverBallY - ballY, 2)
+        Math.pow(serverAuthoritativeBallX - ballX, 2) + 
+        Math.pow(serverAuthoritativeBallY - ballY, 2)
     );
     
     // If the ball position is significantly different, count as a correction
-    if (ballDeviation > 10) {
+    if (ballDeviation > 10) { // Threshold for "significant" deviation
         correctionCount++;
     }
     
@@ -625,23 +644,17 @@ function renderServerState(state) {
         // Store server paddle positions for comparison
         serverLeftPaddleY = state.leftPaddle?.y ?? null;  
         serverRightPaddleY = state.rightPaddle?.y ?? null;
-        // Only update ball from server - don't instantly snap
-        ballX = serverBallX;
-        ballY = serverBallY;
+        // DO NOT directly set ballX, ballY here. Interpolation handles it.
     } else {
         // We're on the right
         opponentY = state.leftPaddle?.y ?? opponentY;
         // Store server paddle positions for comparison
         serverLeftPaddleY = state.leftPaddle?.y ?? null;
         serverRightPaddleY = state.rightPaddle?.y ?? null;
-        // Only update ball from server - don't instantly snap
-        ballX = serverBallX;
-        ballY = serverBallY;
+        // DO NOT directly set ballX, ballY here. Interpolation handles it.
     }
     
-    // Update velocities from server
-    ballVX = state.ball?.velocityX ?? ballVX;
-    ballVY = state.ball?.velocityY ?? ballVY;
+    // DO NOT directly set ballVX, ballVY here. The game loop handles adopting new server velocities.
     
     // Update scores
     if (playerSide === 1) {
@@ -682,13 +695,20 @@ export function enableMultiplayer(side, sendUpdateFn) {
     sendPaddleUpdate = sendUpdateFn;
     isGameActive = true;
     
-    // Reset game state
+    // Reset game state (client's visual state)
     playerY = (CANVAS_HEIGHT - PADDLE_HEIGHT) / 2;
     opponentY = (CANVAS_HEIGHT - PADDLE_HEIGHT) / 2;
-    resetBall();
+    resetBall(); // This sets client's ballX, ballY, ballVX, ballVY
     playerScore = 0;
     opponentScore = 0;
     gameOver = false;
+
+    // Initialize server authoritative state to match client's initial state
+    serverAuthoritativeBallX = ballX;
+    serverAuthoritativeBallY = ballY;
+    serverAuthoritativeBallVX = ballVX;
+    serverAuthoritativeBallVY = ballVY;
+    newServerUpdateProcessed = true; // Start as true, assuming initial state is "processed"
     
     // Clear debug history
     ballHistory = [];
