@@ -76,7 +76,8 @@ namespace AzureOnlinePongGame.Services
             // Improved collision detection for the right paddle
             bool hitRightPaddle = CheckContinuousCollision(
                 prevBallX, prevBallY, state.Ball.X, state.Ball.Y,
-                state.RightPaddle.X - BALL_SIZE, state.RightPaddle.Y,
+                state.RightPaddle.X, // Corrected: Use the actual X position of the right paddle
+                state.RightPaddle.Y,
                 PADDLE_WIDTH, PADDLE_HEIGHT);
 
             if (hitRightPaddle)
