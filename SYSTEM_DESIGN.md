@@ -78,17 +78,17 @@ The system uses a hybrid storage approach to minimize Redis dependencies while m
 | Matchmaking Queue | Redis | Real-time |
 | Session Metadata | Redis + Memory | Initial lookup, then cached |
 | Player-Session Mapping | Redis + Memory | Initial lookup, then cached |
-| Paddle Positions | Memory (In-process) | Redis updates throttled to 500ms |
-| Ball Physics | Memory (In-process) | Redis updates throttled to 500ms |
-| Game Scores | Memory + Redis | Critical updates persist immediately |
-| Game Over State | Memory + Redis | Critical updates persist immediately |
+| Paddle Inputs (Targets) | Redis (short-lived) -> Memory (processed by GameLoopService) | Player input frequency (Redis) -> Game loop tick (Memory) |
+| Ball Physics | Memory (In-process, authoritative in GameLoopService) | Game loop tick. Snapshots to Redis periodically. |
+| Game Scores | Memory + Redis | Critical updates persist immediately to Redis. |
+| Game Over State | Memory + Redis | Critical updates persist immediately to Redis. |
 
 This hybrid approach provides:
-- Faster real-time gameplay through in-memory processing
-- Reduced Redis write operations (up to 90% reduction)
-- Reliable state recovery in case of server failures
-- Instant paddle updates via direct SignalR communication
-- Support for horizontal scaling with proper sticky sessions
+- Faster real-time gameplay through in-memory processing by `GameLoopService`.
+- Reduced Redis write operations for continuous paddle positions (inputs are small and transient in Redis).
+- Reliable state recovery in case of server failures.
+- Instant paddle updates via direct SignalR communication.
+- Support for horizontal scaling with proper sticky sessions.
 
 ---
 
@@ -102,19 +102,22 @@ This hybrid approach provides:
 
 ### ASP.NET Core Backend
 - **PongHub:**
-  - Handles SignalR messages (paddle updates, matchmaking, etc.).
-  - Maintains in-memory mapping of players to sessions.
-  - Implements direct client-to-client paddle position updates.
-  - Only writes paddle positions to Redis periodically (500ms intervals).
+  - Handles SignalR messages (matchmaking, keep-alive, etc.).
+  - Receives raw paddle input from clients and forwards it to `GameStateService` for temporary storage in Redis.
+  - Maintains in-memory mapping of players to sessions for direct opponent visual updates.
+  - Implements direct client-to-client paddle position updates for visual responsiveness.
 - **GameStateService:**
-  - Manages game state in Redis.
-  - Handles player matchmaking.
-  - Stores and retrieves game sessions when needed.
+  - Manages game state persistence and retrieval in Redis.
+  - Handles player matchmaking queue.
+  - Stores raw player inputs (paddle targets) temporarily in Redis for `GameLoopService` to consume.
+  - Stores and retrieves game sessions.
 - **GameLoopService:**
   - Runs as a BackgroundService.
-  - Maintains active game sessions in memory.
-  - Updates Redis only for critical state changes or periodic snapshots.
-  - Directly pushes game updates to clients via SignalR.
+  - Retrieves active game sessions and player inputs from Redis (via `GameStateService`).
+  - Applies player inputs to the game state.
+  - Uses `GameEngine` to update game physics based on the latest state (including processed inputs).
+  - Updates Redis for critical state changes (scores, game over) or periodic snapshots of the full game state.
+  - Directly pushes game updates (authoritative state) to clients via SignalR.
 - **GameEngine:**
   - Contains the core game logic.
   - Handles ball movement, collisions, and scoring.
@@ -154,31 +157,37 @@ sequenceDiagram
     PongHub-->>Client: MatchFound
     PongHub->>GameStateService: UpdateSessionForBothPlayersAsync
     GameStateService->>Redis: Create and store session
-    PongHub->>Memory: Cache session metadata
+    PongHub->>Memory: Cache session metadata (local to PongHub for opponent lookups)
 ```
 
-### 2. Paddle Update Optimization Flow
+### 2. Paddle Input and Processing Flow
 ```mermaid
 sequenceDiagram
     participant Client1 as Player 1
     participant SignalR
     participant PongHub
-    participant Memory
+    participant GameStateService
     participant Redis
+    participant GameLoopService
     participant Client2 as Player 2
     
-    Client1->>SignalR: SendPaddleInput(y)
+    Client1->>SignalR: SendPaddleInput(targetY)
     SignalR->>PongHub: Process input
     
-    PongHub->>Memory: Update in-memory paddle position
+    PongHub->>GameStateService: StorePlayerInputAsync(playerId, targetY)
+    GameStateService->>Redis: Store raw input (e.g., player_input:{playerId}, targetY)
     
-    alt Direct opponent update (immediate)
+    alt Direct opponent visual update (immediate)
         PongHub->>SignalR: Send to opponent directly
-        SignalR->>Client2: OpponentPaddleInput(y)
+        SignalR->>Client2: OpponentPaddleInput(targetY)
     end
     
-    alt Throttled Redis update (every 500ms)
-        PongHub->>Redis: Update paddle position
+    loop GameLoopService Tick
+        GameLoopService->>GameStateService: GetAndClearPlayerInputsAsync(sessionId, p1Id, p2Id)
+        GameStateService->>Redis: Retrieve and delete raw inputs for player1Id, player2Id
+        GameStateService-->>GameLoopService: (p1Input, p2Input)
+        GameLoopService->>Memory: Apply p1Input, p2Input to authoritative GameState.LeftPaddleTargetY / RightPaddleTargetY
+        Note over GameLoopService: GameEngine will use these targets in UpdateGameState()
     end
 ```
 
@@ -187,30 +196,37 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     participant GameLoopService
+    participant GameStateService
     participant Memory
     participant Redis
     participant SignalR
     participant Client
     
-    loop Every 33ms (game loop tick)
-        GameLoopService->>Memory: Read session from memory
-        GameLoopService->>GameLoopService: Update game physics
+    loop Every N ms (game loop tick)
+        GameLoopService->>GameStateService: GetAndClearPlayerInputsAsync()
+        GameStateService->>Redis: Fetch and clear inputs
+        GameStateService-->>GameLoopService: Player Inputs
+        GameLoopService->>Memory: Apply inputs to GameState paddle targets
+        GameLoopService->>Memory: Read session from memory (local cache in GameLoopService)
+        GameLoopService->>GameLoopService: Update game physics (GameEngine.UpdateGameState)
         
         alt Critical state change (score, game over)
-            GameLoopService->>Redis: Persist immediately
+            GameLoopService->>GameStateService: UpdateSessionForBothPlayersAsync(session)
+            GameStateService->>Redis: Persist immediately
             GameLoopService->>SignalR: Send immediate update
             SignalR->>Client: GameUpdate (critical)
-        else Normal update
-            GameLoopService->>Memory: Update in-memory state
+        else Normal update (ball/paddle movement)
+            GameLoopService->>Memory: Update in-memory state (local cache in GameLoopService)
         end
         
-        alt Every 100ms
+        alt Periodic client sync (e.g., every 100ms or if significant change)
             GameLoopService->>SignalR: Send position update
-            SignalR->>Client: GameUpdate (positions)
+            SignalR->>Client: GameUpdate (positions, ball)
         end
         
-        alt Every 500ms
-            GameLoopService->>Redis: Persist periodic snapshot
+        alt Periodic Redis snapshot (e.g., every 500ms for non-critical changes)
+            GameLoopService->>GameStateService: UpdateSessionForBothPlayersAsync(session)
+            GameStateService->>Redis: Persist periodic snapshot
         end
     end
 ```

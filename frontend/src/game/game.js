@@ -53,9 +53,6 @@ let lastCollisionCheck = { time: 0, result: false, ballX: 0, ballY: 0, paddleY: 
 
 // Reset ball to center with random direction
 function resetBall() {
-    // Track final ball and paddle positions before reset (for debugging goals)
-    recordGoalData();
-    
     ballX = (CANVAS_WIDTH - BALL_SIZE) / 2;
     ballY = (CANVAS_HEIGHT - BALL_SIZE) / 2;
     ballVX = BALL_SPEED * (Math.random() > 0.5 ? 1 : -1);
@@ -68,6 +65,15 @@ function recordGoalData() {
     if (ballX === (CANVAS_WIDTH - BALL_SIZE) / 2 && ballY === (CANVAS_HEIGHT - BALL_SIZE) / 2) return;
     
     const timestamp = new Date().toISOString();
+    // Capture server paddle Y for the relevant side (if available)
+    let serverPaddleY = null;
+    if (isMultiplayer) {
+        if (playerSide === 1) {
+            serverPaddleY = serverLeftPaddleY;
+        } else {
+            serverPaddleY = serverRightPaddleY;
+        }
+    }
     const goalData = {
         timestamp,
         scorer: ballX < 0 ? 'right' : 'left',
@@ -75,7 +81,8 @@ function recordGoalData() {
         ballY,
         ballVX,
         ballVY,
-        playerY,
+        playerY, // frontend paddle Y
+        serverPaddleY, // backend paddle Y (last known)
         opponentY,
         playerSide,
         // Include recent history from last 50 frames
@@ -323,13 +330,23 @@ function updateGoalHistoryDisplay() {
             (playerSide === 1 ? 'You' : 'Opponent') : 
             (playerSide === 2 ? 'You' : 'Opponent');
         
+        // Show both frontend and backend paddle Y in the tooltip
+        let paddleInfo = `Frontend: ${Math.round(goal.playerY)}`;
+        if (goal.serverPaddleY !== undefined && goal.serverPaddleY !== null) {
+            paddleInfo += ` | Backend: ${Math.round(goal.serverPaddleY)}`;
+        }
+        
         goalEntry.innerHTML = `<span>${index+1}. ${scorer} scored at ${goal.timestamp.split('T')[1].slice(0,8)}</span>`;
-        goalEntry.title = `Ball: ${Math.round(goal.ballX)},${Math.round(goal.ballY)} - Paddle: ${Math.round(goal.playerY)}`;
+        goalEntry.title = `Ball: ${Math.round(goal.ballX)},${Math.round(goal.ballY)} - Paddle Y: ${paddleInfo}`;
         
         // Make entry clickable to show detailed replay data
         goalEntry.addEventListener('click', () => {
-            console.log('Goal Details:', goal);
-            alert(`Goal ${index+1} Details:\nScorer: ${scorer}\nBall Position: ${Math.round(goal.ballX)},${Math.round(goal.ballY)}\nBall Velocity: ${goal.ballVX.toFixed(2)},${goal.ballVY.toFixed(2)}\nPaddle Position: ${Math.round(goal.playerY)}`);
+            let details = `Goal ${index+1} Details:\nScorer: ${scorer}\nBall Position: ${Math.round(goal.ballX)},${Math.round(goal.ballY)}\nBall Velocity: ${goal.ballVX.toFixed(2)},${goal.ballVY.toFixed(2)}\nPaddle Y (Frontend): ${Math.round(goal.playerY)}`;
+            if (goal.serverPaddleY !== undefined && goal.serverPaddleY !== null) {
+                details += `\nPaddle Y (Backend): ${Math.round(goal.serverPaddleY)}`;
+                details += `\nDelta: ${Math.abs(Math.round(goal.playerY) - Math.round(goal.serverPaddleY))}`;
+            }
+            alert(details);
         });
         
         goalHistoryElem.appendChild(goalEntry);
@@ -424,11 +441,13 @@ function updateSinglePlayer() {
     // Scoring
     if (ballX < 0) {
         // Right scores
+        recordGoalData();
         if (playerSide === 2) playerScore++; else opponentScore++;
         if (Math.max(playerScore, opponentScore) >= 5) gameOver = true;
         resetBall();
     } else if (ballX > CANVAS_WIDTH) {
         // Left scores
+        recordGoalData();
         if (playerSide === 1) playerScore++; else opponentScore++;
         if (Math.max(playerScore, opponentScore) >= 5) gameOver = true;
         resetBall();
@@ -779,11 +798,10 @@ export function startLocalGame() {
     opponentScore = 0;
     gameOver = false;
     
-    // Clear debug history
+    // Clear debug history (but do NOT clear goalHistory)
     ballHistory = [];
     paddleHistory = [];
     collisionChecks = [];
-    goalHistory = [];
     
     // Show instructions
     const instructions = document.getElementById('game-instructions');

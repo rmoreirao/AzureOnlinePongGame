@@ -21,6 +21,7 @@ namespace AzureOnlinePongGame.Services // Changed namespace
         private const string MATCHMAKING_QUEUE_KEY = "pong:matchmaking_queue";
         private const string ACTIVE_GAMES_KEY_PREFIX = "pong:game:";
         private const string PLAYER_SESSION_MAP_KEY_PREFIX = "pong:player_session:";
+        private const string PLAYER_INPUT_KEY_PREFIX = "pong:player_input:";
         private const int SESSION_EXPIRY_MINUTES = 10; // Adjust as needed
 
         // Inject IConfiguration and ILogger
@@ -235,6 +236,14 @@ namespace AzureOnlinePongGame.Services // Changed namespace
                 var tran = db.CreateTransaction();
                 _ = tran.StringSetAsync(sessionKey, sessionJson, TimeSpan.FromMinutes(SESSION_EXPIRY_MINUTES));
                 _ = tran.StringSetAsync(playerMapKey, sessionKey, TimeSpan.FromMinutes(SESSION_EXPIRY_MINUTES)); // Map player to session key
+
+                // If there's a second player, index them too
+                if (!string.IsNullOrEmpty(session.Player2Id) && session.Player2Id != playerId)
+                {
+                    var player2MapKey = GetPlayerMapKey(session.Player2Id);
+                    _ = tran.StringSetAsync(player2MapKey, sessionKey, TimeSpan.FromMinutes(SESSION_EXPIRY_MINUTES));
+                }
+
                 bool success = await tran.ExecuteAsync().ConfigureAwait(false);
 
                 if (success)
@@ -306,54 +315,57 @@ namespace AzureOnlinePongGame.Services // Changed namespace
             }
         }
 
-        public async Task<GameSession?> GetSessionAsync(string playerId)
+        public async Task<GameSession?> GetSessionAsync(string playerIdOrSessionId)
         {
             try
             {
                 var db = GetDatabase();
-                string playerMapKey = GetPlayerMapKey(playerId);
+                string? sessionId = null;
 
-                // 1. Find the session key associated with the player
-                RedisValue sessionKeyRedis = await db.StringGetAsync(playerMapKey).ConfigureAwait(false);
-                if (!sessionKeyRedis.HasValue)
+                // First, try to see if the provided ID is a direct session ID
+                var directSessionData = await db.StringGetAsync($"{ACTIVE_GAMES_KEY_PREFIX}{playerIdOrSessionId}");
+                if (directSessionData.HasValue)
                 {
-                    _logger.LogDebug($"No active session key found for player {playerId} in map.");
-                    return null;
+                    sessionId = playerIdOrSessionId;
                 }
-                string sessionKey = sessionKeyRedis.ToString();
-
-                // 2. Retrieve the actual session data using the session key
-                RedisValue sessionJsonRedis = await db.StringGetAsync(sessionKey).ConfigureAwait(false);
-                if (!sessionJsonRedis.HasValue)
+                else
                 {
-                    _logger.LogWarning($"Player map key {playerMapKey} pointed to session key {sessionKey}, but session data was not found. Cleaning up stale map entry.");
-                    // Clean up the stale player map entry
-                    await db.KeyDeleteAsync(playerMapKey).ConfigureAwait(false);
-                    return null;
+                    // If not, assume it's a player ID and look up the session ID in the index
+                    var sessionLookupKey = GetPlayerMapKey(playerIdOrSessionId);
+                    var indexedSessionId = await db.StringGetAsync(sessionLookupKey);
+                    if (indexedSessionId.HasValue)
+                    {
+                        sessionId = indexedSessionId.ToString();
+                    }
                 }
 
-                // Optionally refresh expiry on read
-                _ = await db.KeyExpireAsync(sessionKey, TimeSpan.FromMinutes(SESSION_EXPIRY_MINUTES)).ConfigureAwait(false);
-                _ = await db.KeyExpireAsync(playerMapKey, TimeSpan.FromMinutes(SESSION_EXPIRY_MINUTES)).ConfigureAwait(false);
+                if (string.IsNullOrEmpty(sessionId))
+                {
+                    _logger.LogDebug($"No session ID found for identifier: {playerIdOrSessionId}");
+                    return null;
+                }
 
+                var sessionKey = $"{ACTIVE_GAMES_KEY_PREFIX}{sessionId}";
+                var sessionData = await db.StringGetAsync(sessionKey);
+                if (!sessionData.HasValue)
+                {
+                    _logger.LogWarning($"Session data not found for session ID: {sessionId} (looked up via {playerIdOrSessionId})");
+                    return null;
+                }
 
-                var session = JsonConvert.DeserializeObject<GameSession>(sessionJsonRedis.ToString());
-                 if (session == null)
-                 {
-                     _logger.LogError($"Failed to deserialize session data for key {sessionKey}. Data: '{sessionJsonRedis}'");
-                     return null;
-                 }
-
-                 if (_logger.IsEnabled(LogLevel.Debug))
-                 {
-                    _logger.LogDebug($"Session retrieved successfully for player {playerId} using key {sessionKey}.");
-                 }
-                 return session;
-
+                try
+                {
+                    return JsonConvert.DeserializeObject<GameSession>(sessionData.ToString());
+                }
+                catch (JsonException ex)
+                {
+                    _logger.LogError(ex, $"Failed to deserialize session data for session ID: {sessionId}");
+                    return null;
+                }
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, $"Error retrieving session for player {playerId}.");
+                _logger.LogError(ex, $"Error retrieving session for identifier {playerIdOrSessionId}.");
                 return null;
             }
         }
@@ -498,12 +510,63 @@ namespace AzureOnlinePongGame.Services // Changed namespace
             }
         }
 
-        // --- New methods for handling player input --- 
-        public async Task<(float? leftInput, float? rightInput)> GetAndClearPlayerInputsAsync(string sessionId, string player1Id, string player2Id)
+        public async Task StorePlayerInputAsync(string playerId, float targetY)
         {
-            // This is a stub for compatibility. You should implement the logic to retrieve and clear player inputs from Redis or in-memory store.
-            // For now, just return (null, null) to allow compilation.
-            return (null, null);
+            try
+            {
+                var db = GetDatabase();
+                var inputKey = $"{PLAYER_INPUT_KEY_PREFIX}{playerId}";
+                // Store the input. It will be cleared by GameLoopService after processing.
+                await db.StringSetAsync(inputKey, targetY.ToString(), TimeSpan.FromSeconds(5)); // Expire if not processed quickly
+                _logger.LogDebug($"Stored input for player {playerId}: {targetY}");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"Error storing input for player {playerId}.");
+            }
+        }
+
+        public async Task<(float? Player1Input, float? Player2Input)> GetAndClearPlayerInputsAsync(string sessionId, string? player1Id, string? player2Id)
+        {
+            var db = GetDatabase();
+            float? p1Input = null;
+            float? p2Input = null;
+
+            try
+            {
+                if (!string.IsNullOrEmpty(player1Id))
+                {
+                    var inputKey1 = $"{PLAYER_INPUT_KEY_PREFIX}{player1Id}";
+                    var inputVal1 = await db.StringGetAsync(inputKey1);
+                    if (inputVal1.HasValue && float.TryParse(inputVal1, out float p1TargetY))
+                    {
+                        p1Input = p1TargetY;
+                        await db.KeyDeleteAsync(inputKey1); // Clear after reading
+                    }
+                }
+
+                if (!string.IsNullOrEmpty(player2Id) && !player2Id.StartsWith("bot_"))
+                {
+                    var inputKey2 = $"{PLAYER_INPUT_KEY_PREFIX}{player2Id}";
+                    var inputVal2 = await db.StringGetAsync(inputKey2);
+                    if (inputVal2.HasValue && float.TryParse(inputVal2, out float p2TargetY))
+                    {
+                        p2Input = p2TargetY;
+                        await db.KeyDeleteAsync(inputKey2); // Clear after reading
+                    }
+                }
+
+                if (p1Input.HasValue || p2Input.HasValue)
+                {
+                    _logger.LogDebug($"Inputs for session {sessionId}: P1: {p1Input?.ToString() ?? "N/A"}, P2: {p2Input?.ToString() ?? "N/A"}");
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"Error retrieving and clearing inputs for session {sessionId}.");
+            }
+
+            return (p1Input, p2Input);
         }
 
         // Implement IDisposable

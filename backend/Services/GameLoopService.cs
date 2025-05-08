@@ -88,42 +88,50 @@ namespace AzureOnlinePongGame.Services
                     var activeSessions = new List<GameSession>();
                     var updatedSessions = new List<GameSession>();
                     
-                    foreach (var cacheEntry in _sessionCache)
+                    foreach (var cacheEntry in _sessionCache.ToList()) // ToList() to allow modification if a session ends
                     {
                         var session = cacheEntry.Value.Session;
-                        
-                        // Skip inactive games
+                        var sessionId = session.SessionId;
+
+                        // Skip inactive or non-existent games
                         if (session.State.GameOver || !session.State.PlayersReady)
+                        {
+                            // Optional: Clean up ended sessions from cache if not handled by RefreshSessionCacheAsync timely
+                            if (session.State.GameOver && (now - cacheEntry.Value.LastUpdate) > TimeSpan.FromSeconds(30)) // Example cleanup delay
+                            {
+                                _sessionCache.Remove(sessionId);
+                                _sessionsWithCriticalChanges.Remove(sessionId);
+                            }
                             continue;
+                        }
                             
                         activeSessions.Add(session);
                         
-                        // Get player inputs
-                        var (leftInput, rightInput) = await _gameStateService.GetAndClearPlayerInputsAsync(
-                            session.SessionId, session.Player1Id, session.Player2Id);
+                        // Get player inputs from Redis (new step)
+                        var (player1Input, player2Input) = await _gameStateService.GetAndClearPlayerInputsAsync(
+                            sessionId, session.Player1Id, session.Player2Id);
                             
-                        bool stateChanged = false;
-                        bool criticalStateChange = false;
+                        bool stateChangedByInput = false;
                         
                         // Apply inputs if provided
-                        if (leftInput.HasValue)
+                        if (player1Input.HasValue)
                         {
-                            session.State.LeftPaddleTargetY = leftInput.Value;
-                            stateChanged = true;
+                            session.State.LeftPaddleTargetY = player1Input.Value;
+                            stateChangedByInput = true;
                         }
                         
-                        if (rightInput.HasValue)
+                        if (player2Input.HasValue) // Bot inputs are handled by UpdateBotPaddle
                         {
-                            session.State.RightPaddleTargetY = rightInput.Value;
-                            stateChanged = true;
+                            session.State.RightPaddleTargetY = player2Input.Value;
+                            stateChangedByInput = true;
                         }
                         
                         // Bot games: update bot paddle
                         bool isBot = session.Player2Id != null && session.Player2Id.StartsWith("bot_");
                         if (isBot)
                         {
-                            session.State = GameEngine.UpdateBotPaddle(session.State);
-                            stateChanged = true;
+                            session.State = GameEngine.UpdateBotPaddle(session.State); // This sets RightPaddleTargetY for bot
+                            // stateChangedByInput = true; // Bot movement is part of regular engine update cycle
                         }
                         
                         // Update game state with deltaTime
@@ -135,6 +143,7 @@ namespace AzureOnlinePongGame.Services
                         
                         session.State = GameEngine.UpdateGameState(session.State, DELTA_TIME);
                         
+                        bool criticalStateChange = false;
                         // Check if score or game state changed - these are critical changes
                         if (oldLeftScore != session.State.LeftScore || 
                             oldRightScore != session.State.RightScore || 
@@ -147,16 +156,17 @@ namespace AzureOnlinePongGame.Services
                             await _gameStateService.UpdateSessionForBothPlayersAsync(session);
                         }
                         
-                        // Check if anything important changed
-                        if (oldBallX != session.State.Ball.X || 
+                        // Check if anything important changed (ball movement, input-driven paddle change, or critical change)
+                        if (stateChangedByInput || 
+                            oldBallX != session.State.Ball.X || 
                             oldBallY != session.State.Ball.Y ||
-                            stateChanged)
+                            criticalStateChange) // criticalStateChange implies something important changed
                         {
                             session.State.NeedsUpdate = true;
                             updatedSessions.Add(session);
                             
-                            // If something significant changed, update the client immediately
-                            if (criticalStateChange)
+                            // If something significant changed (critical or new input affecting paddles), update the client immediately
+                            if (criticalStateChange || stateChangedByInput)
                             {
                                 if (!string.IsNullOrEmpty(session.Player1Id))
                                     await _hubContext.Clients.Client(session.Player1Id).SendAsync("GameUpdate", session.State);

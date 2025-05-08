@@ -14,20 +14,11 @@ namespace AzureOnlinePongGame
         private readonly ILogger<PongHub> _logger;
         private readonly IMemoryCache _memoryCache;
         
-        // Memory cache for paddle updates to reduce Redis write frequency
-        private static readonly ConcurrentDictionary<string, float> _paddleUpdateCache = new();
-        
         // In-memory mapping of player connections to sessions for faster lookups
         private static readonly ConcurrentDictionary<string, string> _playerSessionMap = new();
         
         // Track paddle positions in memory to avoid Redis reads
         private static readonly ConcurrentDictionary<string, (string SessionId, int Side, float Position)> _playerPaddlePositions = new();
-
-        // Constants for paddle update throttling
-        private const int PADDLE_UPDATE_THROTTLE_MS = 30; // ~33 updates per second
-        
-        // Constants for Redis persistence throttling
-        private const int REDIS_PERSISTENCE_THROTTLE_MS = 500; // Persist to Redis every 500ms
 
         public PongHub(GameStateService gameStateService, ILogger<PongHub> logger, IMemoryCache memoryCache)
         {
@@ -99,9 +90,10 @@ namespace AzureOnlinePongGame
             // Clamp to valid range
             targetY = Math.Max(0, Math.Min(600 - 100, targetY));
             
-            // Store paddle update in cache
-            _paddleUpdateCache[playerId] = targetY;
+            // Store player input directly using GameStateService for GameLoopService to pick up
+            await _gameStateService.StorePlayerInputAsync(playerId, targetY);
             
+            // The rest of this method is for direct opponent visual updates, which is fine.
             // Get the player's session info from memory if available
             if (!_playerPaddlePositions.TryGetValue(playerId, out var paddleInfo))
             {
@@ -154,96 +146,6 @@ namespace AzureOnlinePongGame
                     await Clients.Client(opponentId).SendAsync("OpponentPaddleInput", targetY);
                 }
             }
-            
-            // Throttle Redis persistence to reduce writes
-            string persistCacheKey = $"paddle_persist_time:{playerId}";
-            
-            // Check throttle for Redis persistence
-            if (!_memoryCache.TryGetValue(persistCacheKey, out _))
-            {
-                // Only apply to Redis if throttle expired
-                await ApplyPaddleUpdateToRedisAsync(playerId, targetY);
-                
-                // Store update time with fixed expiration
-                _memoryCache.Set(persistCacheKey, DateTime.UtcNow, 
-                    new MemoryCacheEntryOptions().SetAbsoluteExpiration(
-                        TimeSpan.FromMilliseconds(REDIS_PERSISTENCE_THROTTLE_MS)));
-            }
-        }
-        
-        private async Task ApplyPaddleUpdateToRedisAsync(string playerId, float paddleY)
-        {
-            try
-            {
-                // Check our in-memory mapping first
-                if (!_playerSessionMap.TryGetValue(playerId, out var sessionId))
-                {
-                    // Fall back to Redis lookup (should only happen once)
-                    var session = await _gameStateService.GetSessionAsync(playerId);
-                    if (session == null || session.State.GameOver)
-                    {
-                        if (session == null) 
-                            _logger.LogDebug($"[UpdatePaddle] Session not found for player {playerId}. Ignoring update.");
-                        else 
-                            _logger.LogDebug($"[UpdatePaddle] Game already over for player {playerId}. Ignoring update.");
-                        return;
-                    }
-                    
-                    // Cache for future use
-                    sessionId = session.SessionId;
-                    _playerSessionMap[playerId] = sessionId;
-                    
-                    // Update the appropriate paddle
-                    int side = session.Player1Id == playerId ? 1 : 2;
-                    if (side == 1)
-                    {
-                        session.State.LeftPaddleTargetY = paddleY;
-                        session.State.LeftPaddle.Y = paddleY;
-                    }
-                    else
-                    {
-                        session.State.RightPaddleTargetY = paddleY;
-                        session.State.RightPaddle.Y = paddleY; 
-                    }
-                    
-                    // Store side and position in memory
-                    _playerPaddlePositions[playerId] = (sessionId, side, paddleY);
-                    
-                    // Update Redis (less frequently due to throttling)
-                    session.State.NeedsUpdate = true;
-                    await _gameStateService.UpdateSessionForBothPlayersAsync(session);
-                }
-                else
-                {
-                    // We have the mapping in memory, make more efficient update
-                    var session = await _gameStateService.GetSessionAsync(playerId);
-                    if (session != null && !session.State.GameOver)
-                    {
-                        // Update the appropriate paddle
-                        if (_playerPaddlePositions.TryGetValue(playerId, out var paddleInfo))
-                        {
-                            if (paddleInfo.Side == 1)
-                            {
-                                session.State.LeftPaddleTargetY = paddleY;
-                                session.State.LeftPaddle.Y = paddleY;
-                            }
-                            else
-                            {
-                                session.State.RightPaddleTargetY = paddleY;
-                                session.State.RightPaddle.Y = paddleY; 
-                            }
-                            
-                            // Update Redis (less frequently due to throttling)
-                            session.State.NeedsUpdate = true;
-                            await _gameStateService.UpdateSessionForBothPlayersAsync(session);
-                        }
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, $"Error processing paddle update from {playerId}");
-            }
         }
 
         public async Task KeepAlive()
@@ -281,7 +183,6 @@ namespace AzureOnlinePongGame
             _logger.LogInformation($"Client disconnected: {connectionId}");
 
             // Clean up cached paddle updates and mappings
-            _paddleUpdateCache.TryRemove(connectionId, out _);
             _playerPaddlePositions.TryRemove(connectionId, out _);
             _playerSessionMap.TryRemove(connectionId, out _);
 
