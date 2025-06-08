@@ -17,17 +17,17 @@ namespace AzureOnlinePongGame.Services // Changed namespace
         private readonly ILogger<GameStateService> _logger;
         private readonly Lazy<ConnectionMultiplexer> _lazyConnection;
         private readonly string _redisConnectionString;
+        private readonly PaddlePositionCache _paddlePositionCache;
 
         private const string MATCHMAKING_QUEUE_KEY = "pong:matchmaking_queue";
         private const string ACTIVE_GAMES_KEY_PREFIX = "pong:game:";
         private const string PLAYER_SESSION_MAP_KEY_PREFIX = "pong:player_session:";
         private const string PLAYER_INPUT_KEY_PREFIX = "pong:player_input:";
-        private const int SESSION_EXPIRY_MINUTES = 10; // Adjust as needed
-
-        // Inject IConfiguration and ILogger
-        public GameStateService(IConfiguration configuration, ILogger<GameStateService> logger)
+        private const int SESSION_EXPIRY_MINUTES = 10; // Adjust as needed        // Inject IConfiguration and ILogger
+        public GameStateService(IConfiguration configuration, ILogger<GameStateService> logger, PaddlePositionCache paddlePositionCache)
         {
             _logger = logger;
+            _paddlePositionCache = paddlePositionCache;
             // Read connection string from configuration
             _redisConnectionString = configuration.GetConnectionString("RedisConnection")
                 ?? throw new InvalidOperationException("Redis connection string 'RedisConnection' not found in configuration.");
@@ -510,14 +510,12 @@ namespace AzureOnlinePongGame.Services // Changed namespace
             }
         }
 
-        public async Task StorePlayerInputAsync(string playerId, float targetY)
+        public void StorePlayerInputAsync(string playerId, float targetY)
         {
             try
             {
-                var db = GetDatabase();
-                var inputKey = $"{PLAYER_INPUT_KEY_PREFIX}{playerId}";
-                // Store the input. It will be cleared by GameLoopService after processing.
-                await db.StringSetAsync(inputKey, targetY.ToString(), TimeSpan.FromSeconds(5)); // Expire if not processed quickly
+                // Use memory cache instead of Redis for paddle positions
+                _paddlePositionCache.StorePaddlePosition(playerId, targetY);
                 _logger.LogDebug($"Stored input for player {playerId}: {targetY}");
             }
             catch (Exception ex)
@@ -526,47 +524,28 @@ namespace AzureOnlinePongGame.Services // Changed namespace
             }
         }
 
-        public async Task<(float? Player1Input, float? Player2Input)> GetAndClearPlayerInputsAsync(string sessionId, string? player1Id, string? player2Id)
+        public Task<(float? Player1Input, float? Player2Input)> GetAndClearPlayerInputsAsync(string sessionId, string? player1Id, string? player2Id)
         {
-            var db = GetDatabase();
-            float? p1Input = null;
-            float? p2Input = null;
-
             try
             {
-                if (!string.IsNullOrEmpty(player1Id))
-                {
-                    var inputKey1 = $"{PLAYER_INPUT_KEY_PREFIX}{player1Id}";
-                    var inputVal1 = await db.StringGetAsync(inputKey1);
-                    if (inputVal1.HasValue && float.TryParse(inputVal1, out float p1TargetY))
-                    {
-                        p1Input = p1TargetY;
-                        await db.KeyDeleteAsync(inputKey1); // Clear after reading
-                    }
-                }
-
-                if (!string.IsNullOrEmpty(player2Id) && !player2Id.StartsWith("bot_"))
-                {
-                    var inputKey2 = $"{PLAYER_INPUT_KEY_PREFIX}{player2Id}";
-                    var inputVal2 = await db.StringGetAsync(inputKey2);
-                    if (inputVal2.HasValue && float.TryParse(inputVal2, out float p2TargetY))
-                    {
-                        p2Input = p2TargetY;
-                        await db.KeyDeleteAsync(inputKey2); // Clear after reading
-                    }
-                }
+                // Get paddle positions from memory cache
+                var (p1Input, p2Input) = _paddlePositionCache.GetPlayerInputs(player1Id, player2Id);
 
                 if (p1Input.HasValue || p2Input.HasValue)
                 {
                     _logger.LogDebug($"Inputs for session {sessionId}: P1: {p1Input?.ToString() ?? "N/A"}, P2: {p2Input?.ToString() ?? "N/A"}");
                 }
+
+                // We don't need to remove the paddle positions here, they'll be overwritten with new positions
+                // or will expire based on the cache configuration in PaddlePositionCache
+
+                return Task.FromResult((p1Input, p2Input));
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, $"Error retrieving and clearing inputs for session {sessionId}.");
+                return Task.FromResult<(float? Player1Input, float? Player2Input)>((null, null));
             }
-
-            return (p1Input, p2Input);
         }
 
         // Implement IDisposable

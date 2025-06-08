@@ -86,12 +86,11 @@ namespace AzureOnlinePongGame
         public async Task SendPaddleInput(float targetY)
         {
             var playerId = Context.ConnectionId;
-            
-            // Clamp to valid range
+              // Clamp to valid range
             targetY = Math.Max(0, Math.Min(600 - 100, targetY));
             
             // Store player input directly using GameStateService for GameLoopService to pick up
-            await _gameStateService.StorePlayerInputAsync(playerId, targetY);
+            _gameStateService.StorePlayerInputAsync(playerId, targetY);
             
             // The rest of this method is for direct opponent visual updates, which is fine.
             // Get the player's session info from memory if available

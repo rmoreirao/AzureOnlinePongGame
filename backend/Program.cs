@@ -24,6 +24,9 @@ builder.Services.AddSingleton<GameStateService>();
 // Add memory cache service
 builder.Services.AddMemoryCache();
 
+// Register PaddlePositionCache for in-memory paddle position storage
+builder.Services.AddSingleton<PaddlePositionCache>();
+
 // 2. Configure Health Checks
 builder.Services.AddHealthChecks()
     // Add Redis health check

@@ -12,8 +12,7 @@ using System.Linq;
 namespace AzureOnlinePongGame.Services
 {
     public class GameLoopService : BackgroundService
-    {
-        private readonly GameStateService _gameStateService;
+    {private readonly GameStateService _gameStateService;
         private readonly IHubContext<PongHub> _hubContext;
         private readonly ILogger<GameLoopService> _logger;
         
