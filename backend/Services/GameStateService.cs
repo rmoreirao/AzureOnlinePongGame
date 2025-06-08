@@ -4,6 +4,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using StackExchange.Redis;
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
@@ -206,258 +207,91 @@ namespace AzureOnlinePongGame.Services // Changed namespace
             }
         }
 
+        // In-memory session storage for active sessions
+        private readonly ConcurrentDictionary<string, GameSession> _activeSessions = new();
+        // Helper for consistent session key
         private string GetSessionKey(string player1Id, string player2Id)
         {
-            // Ensure consistent key regardless of player order
             var ids = new List<string> { player1Id, player2Id };
             ids.Sort(StringComparer.Ordinal);
             return $"{ACTIVE_GAMES_KEY_PREFIX}{ids[0]}:{ids[1]}";
         }
-
-        private string GetPlayerMapKey(string playerId)
-        {
-            return $"{PLAYER_SESSION_MAP_KEY_PREFIX}{playerId}";
-        }
-
-        public async Task<bool> StoreSessionAsync(string playerId, GameSession session)
+        // In-memory session storage
+        public Task<bool> StoreSessionAsync(string playerId, GameSession session)
         {
             try
             {
-                var db = GetDatabase();
                 string sessionKey = GetSessionKey(session.Player1Id, session.Player2Id);
-                string playerMapKey = GetPlayerMapKey(playerId);
-                string sessionJson = JsonConvert.SerializeObject(session, new JsonSerializerSettings {
-                    ContractResolver = new Newtonsoft.Json.Serialization.CamelCasePropertyNamesContractResolver(),
-                    NullValueHandling = NullValueHandling.Ignore,
-                    DefaultValueHandling = DefaultValueHandling.Ignore
-                });
-
-                // Use a transaction to ensure atomicity
-                var tran = db.CreateTransaction();
-                _ = tran.StringSetAsync(sessionKey, sessionJson, TimeSpan.FromMinutes(SESSION_EXPIRY_MINUTES));
-                _ = tran.StringSetAsync(playerMapKey, sessionKey, TimeSpan.FromMinutes(SESSION_EXPIRY_MINUTES)); // Map player to session key
-
-                // If there's a second player, index them too
-                if (!string.IsNullOrEmpty(session.Player2Id) && session.Player2Id != playerId)
-                {
-                    var player2MapKey = GetPlayerMapKey(session.Player2Id);
-                    _ = tran.StringSetAsync(player2MapKey, sessionKey, TimeSpan.FromMinutes(SESSION_EXPIRY_MINUTES));
-                }
-
-                bool success = await tran.ExecuteAsync().ConfigureAwait(false);
-
-                if (success)
-                {
-                    _logger.LogInformation($"Session {sessionKey} stored successfully for player {playerId}.");
-                }
-                else
-                {
-                    _logger.LogError($"Failed to execute transaction for storing session {sessionKey} for player {playerId}.");
-                }
-                return success;
+                _activeSessions[sessionKey] = session;
+                _logger.LogInformation($"Session {sessionKey} stored in memory for player {playerId}.");
+                return Task.FromResult(true);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, $"Error storing session for player {playerId}.");
-                return false;
+                _logger.LogError(ex, $"Error storing session for player {playerId} in memory.");
+                return Task.FromResult(false);
             }
         }
 
-        public async Task<bool> UpdateSessionForBothPlayersAsync(GameSession session)
+        public Task<bool> UpdateSessionForBothPlayersAsync(GameSession session)
         {
             if (string.IsNullOrEmpty(session.Player1Id) || string.IsNullOrEmpty(session.Player2Id))
             {
                 _logger.LogError($"Attempted to update session with missing player IDs: P1={session.Player1Id}, P2={session.Player2Id}");
-                return false;
+                return Task.FromResult(false);
             }
-
             try
             {
-                var db = GetDatabase();
                 string sessionKey = GetSessionKey(session.Player1Id, session.Player2Id);
-                string player1MapKey = GetPlayerMapKey(session.Player1Id);
-                string player2MapKey = GetPlayerMapKey(session.Player2Id);
-                session.LastUpdateTime = DateTime.UtcNow; // Update timestamp before saving
-                
-                // Only serialize if needed (reduces CPU overhead)
-                string? sessionJson = null;
-                    
-                // Use a transaction to reduce round-trips
-                var tran = db.CreateTransaction();
-                    
-                // Prepare for serialization only when needed
-                sessionJson = JsonConvert.SerializeObject(session, new JsonSerializerSettings {
-                    ContractResolver = new Newtonsoft.Json.Serialization.CamelCasePropertyNamesContractResolver(),
-                    NullValueHandling = NullValueHandling.Ignore,
-                    DefaultValueHandling = DefaultValueHandling.Ignore
-                });
-                    
-                // Update session data with expiry
-                _ = tran.StringSetAsync(sessionKey, sessionJson, TimeSpan.FromMinutes(SESSION_EXPIRY_MINUTES));
-                    
-                // Update player-to-session mapping with expiry for both players
-                _ = tran.StringSetAsync(player1MapKey, sessionKey, TimeSpan.FromMinutes(SESSION_EXPIRY_MINUTES));
-                    
-                // Don't set the mapping for bot players
-                if (!session.Player2Id.StartsWith("bot_"))
-                {
-                    _ = tran.StringSetAsync(player2MapKey, sessionKey, TimeSpan.FromMinutes(SESSION_EXPIRY_MINUTES));
-                }
-                    
-                bool success = await tran.ExecuteAsync().ConfigureAwait(false);
-
-                return success;
+                session.LastUpdateTime = DateTime.UtcNow;
+                _activeSessions[sessionKey] = session;
+                return Task.FromResult(true);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, $"Error updating session for players {session.Player1Id} and {session.Player2Id}.");
-                return false;
+                _logger.LogError(ex, $"Error updating session for players {session.Player1Id} and {session.Player2Id} in memory.");
+                return Task.FromResult(false);
             }
         }
 
-        public async Task<GameSession?> GetSessionAsync(string playerIdOrSessionId)
+        public Task<GameSession?> GetSessionAsync(string playerIdOrSessionId)
         {
             try
             {
-                var db = GetDatabase();
-                string? sessionId = null;
-
-                // First, try to see if the provided ID is a direct session ID
-                var directSessionData = await db.StringGetAsync($"{ACTIVE_GAMES_KEY_PREFIX}{playerIdOrSessionId}");
-                if (directSessionData.HasValue)
+                // Try as session key
+                string sessionKey = $"{ACTIVE_GAMES_KEY_PREFIX}{playerIdOrSessionId}";
+                if (_activeSessions.TryGetValue(sessionKey, out var session))
                 {
-                    sessionId = playerIdOrSessionId;
+                    return Task.FromResult<GameSession?>(session);
                 }
-                else
+                // Try as player ID
+                var found = _activeSessions.Values.FirstOrDefault(s => s.Player1Id == playerIdOrSessionId || s.Player2Id == playerIdOrSessionId);
+                if (found != null)
                 {
-                    // If not, assume it's a player ID and look up the session ID in the index
-                    var sessionLookupKey = GetPlayerMapKey(playerIdOrSessionId);
-                    var indexedSessionId = await db.StringGetAsync(sessionLookupKey);
-                    if (indexedSessionId.HasValue)
-                    {
-                        sessionId = indexedSessionId.ToString();
-                    }
+                    return Task.FromResult<GameSession?>(found);
                 }
-
-                if (string.IsNullOrEmpty(sessionId))
-                {
-                    _logger.LogDebug($"No session ID found for identifier: {playerIdOrSessionId}");
-                    return null;
-                }
-
-                var sessionKey = $"{ACTIVE_GAMES_KEY_PREFIX}{sessionId}";
-                var sessionData = await db.StringGetAsync(sessionKey);
-                if (!sessionData.HasValue)
-                {
-                    _logger.LogWarning($"Session data not found for session ID: {sessionId} (looked up via {playerIdOrSessionId})");
-                    return null;
-                }
-
-                try
-                {
-                    return JsonConvert.DeserializeObject<GameSession>(sessionData.ToString());
-                }
-                catch (JsonException ex)
-                {
-                    _logger.LogError(ex, $"Failed to deserialize session data for session ID: {sessionId}");
-                    return null;
-                }
+                _logger.LogDebug($"No session found in memory for identifier: {playerIdOrSessionId}");
+                return Task.FromResult<GameSession?>(null);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, $"Error retrieving session for identifier {playerIdOrSessionId}.");
-                return null;
+                _logger.LogError(ex, $"Error retrieving session for identifier {playerIdOrSessionId} from memory.");
+                return Task.FromResult<GameSession?>(null);
             }
         }
 
-        public async Task<List<GameSession>> GetAllActiveSessionsAsync()
-        {
-            var sessions = new List<GameSession>();
-            try
-            {
-                var server = _lazyConnection.Value.GetServer(_lazyConnection.Value.GetEndPoints().First());
-                var db = GetDatabase();
-                
-                // Use SCAN instead of KEYS for better memory management
-                var pattern = $"{ACTIVE_GAMES_KEY_PREFIX}*";
-                var pageSize = 20; // Process in reasonable batches
-                var sessionKeys = new List<RedisKey>();
-                
-                await foreach (var key in server.KeysAsync(pattern: pattern, pageSize: pageSize))
-                {
-                    sessionKeys.Add(key);
-                    
-                    // Process in batches to avoid large memory allocations
-                    if (sessionKeys.Count >= pageSize)
-                    {
-                        await ProcessSessionBatchAsync(db, sessionKeys, sessions);
-                        sessionKeys.Clear();
-                    }
-                }
-                
-                // Process any remaining keys
-                if (sessionKeys.Count > 0)
-                {
-                    await ProcessSessionBatchAsync(db, sessionKeys, sessions);
-                }
-                
-                _logger.LogDebug($"Retrieved {sessions.Count} active game sessions.");
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error retrieving all active game sessions.");
-            }
-            return sessions;
-        }
-
-        private async Task ProcessSessionBatchAsync(IDatabase db, List<RedisKey> sessionKeys, List<GameSession> sessions)
-        {
-            if (sessionKeys.Count == 0) return;
-            
-            var sessionJsonValues = await db.StringGetAsync(sessionKeys.ToArray());
-            
-            for (int i = 0; i < sessionJsonValues.Length; i++)
-            {
-                if (sessionJsonValues[i].HasValue)
-                {
-                    try
-                    {
-                        var session = JsonConvert.DeserializeObject<GameSession>(sessionJsonValues[i].ToString());
-                        if (session != null && !session.State.GameOver) // Only add active games
-                        {
-                            sessions.Add(session);
-                        }
-                        else if (session != null && session.State.GameOver)
-                        {
-                            // Clean up finished game sessions
-                            _ = db.KeyDeleteAsync(sessionKeys[i]);
-                            
-                            // Also clean up player-to-session mappings
-                            if (!string.IsNullOrEmpty(session.Player1Id))
-                                _ = db.KeyDeleteAsync(GetPlayerMapKey(session.Player1Id));
-                                
-                            if (!string.IsNullOrEmpty(session.Player2Id) && !session.Player2Id.StartsWith("bot_"))
-                                _ = db.KeyDeleteAsync(GetPlayerMapKey(session.Player2Id));
-                        }
-                    }
-                    catch (JsonException jsonEx)
-                    {
-                        _logger.LogError(jsonEx, $"Failed to deserialize session data for key {sessionKeys[i]}.");
-                    }
-                }
-            }
-        }
-
-        public async Task<long> GetMatchmakingQueueSizeAsync()
+        public Task<List<GameSession>> GetAllActiveSessionsAsync()
         {
             try
             {
-                return await GetDatabase().ListLengthAsync(MATCHMAKING_QUEUE_KEY).ConfigureAwait(false);
+                var sessions = _activeSessions.Values.Where(s => s.State != null && !s.State.GameOver).ToList();
+                _logger.LogDebug($"Retrieved {sessions.Count} active game sessions from memory.");
+                return Task.FromResult(sessions);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error getting matchmaking queue size.");
-                return -1; // Indicate error
+                _logger.LogError(ex, "Error retrieving all active game sessions from memory.");
+                return Task.FromResult(new List<GameSession>());
             }
         }
 
@@ -465,16 +299,12 @@ namespace AzureOnlinePongGame.Services // Changed namespace
         {
             try
             {
-                // This relies on KEYS/SCAN, consider alternatives if performance is critical
-                 var server = _lazyConnection.Value.GetServer(_lazyConnection.Value.GetEndPoints().First());
-                 // Use Count() on the IEnumerable returned by Keys
-                 long count = server.Keys(pattern: $"{ACTIVE_GAMES_KEY_PREFIX}*").LongCount();
-                 return count;
+                return _activeSessions.Values.LongCount(s => s.State != null && !s.State.GameOver);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error getting active game count.");
-                return -1; // Indicate error
+                _logger.LogError(ex, "Error getting active game count from memory.");
+                return -1;
             }
         }
 
@@ -545,6 +375,19 @@ namespace AzureOnlinePongGame.Services // Changed namespace
             {
                 _logger.LogError(ex, $"Error retrieving and clearing inputs for session {sessionId}.");
                 return Task.FromResult<(float? Player1Input, float? Player2Input)>((null, null));
+            }
+        }
+
+        public Task<long> GetMatchmakingQueueSizeAsync()
+        {
+            try
+            {
+                return GetDatabase().ListLengthAsync(MATCHMAKING_QUEUE_KEY);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error getting matchmaking queue size.");
+                return Task.FromResult(-1L); // Indicate error
             }
         }
 
